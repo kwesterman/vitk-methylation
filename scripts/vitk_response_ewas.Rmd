@@ -1,0 +1,383 @@
+---
+title: "vitk_responder_ewas"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=F, message=F, warning=F, cache.path="../cache/")
+library(tidyverse)
+library(knitr)
+library(car)
+library(doParallel)
+library(foreach)
+library(itertools)
+library(IlluminaHumanMethylationEPICanno.ilm10b2.hg19)
+library(qqman)
+```
+
+```{r load-data}
+betas <- readRDS("../int/betas.qc.norm.filt.rds")
+
+metadata <- read_csv("../data/phen/finalTbl_withCovariates_more.csv")
+sampleSheet <- read_csv("../int/sampleSheet.csv")
+
+load("../int/pca.RData")
+cellCounts <- readRDS("../int/estCellCounts.rds")
+load("../int/CPACOR.RData")
+```
+
+```{r clean-data}
+mvals <- minfi::logit2(betas)
+
+cellCounts <- as.data.frame(cellCounts) %>%
+  rownames_to_column(var="sampleKey")
+
+nmd <- metadata %>%  # nmd = "non-methylation data"
+  mutate(responder=ifelse(K_responder_YN == "Yes", T, F)) %>%
+  inner_join(sampleSheet, by="hnrcid") %>%
+  mutate(sampleKey=paste(Sentrix_ID, Sentrix_Position, sep="_"),
+         row=as.integer(substr(Sentrix_Position, 3, 3))) %>%
+  inner_join(PCs, by="sampleKey") %>%
+  inner_join(cellCounts, by="sampleKey") %>%
+  inner_join(CP_PCs, by="sampleKey")
+nmd <- nmd[match(colnames(betas), nmd$sampleKey), ]
+stopifnot(all(nmd$sampleKey == colnames(betas)))
+
+epic_anno <- data.frame(getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b2.hg19),
+                        stringsAsFactors=F) %>%
+  filter(!(chr %in% c("chrX", "chrY"))) %>%
+  mutate(chr=as.integer(gsub("chr", "", chr)))
+```
+
+```{r helper-funcs}
+make_qqplot <- function(p_vec, plotTitle="Title") {
+  p_vec <- p_vec[!is.na(p_vec)]
+  qqplot(-log10(1:length(p_vec) / length(p_vec)), -log10(p_vec), pch=".", 
+         main=plotTitle, xlab="Expected (-logP)", ylab="Observed (-logP)")
+  abline(0, 1, col="red")
+}
+
+make_large_qqplot <- function(p_vec, plotTitle="Title") {
+  p_vec <- p_vec[!is.na(p_vec)]
+  qqplot(-log10(1:length(p_vec) / length(p_vec)), -log10(p_vec), pch=".", 
+         cex=4,
+         main=plotTitle, xlab="Expected (-logP)", ylab="Observed (-logP)")
+  abline(0, 1, col="red")
+}
+
+gControl <- function(p_vals) {
+  # See van Iterson 2017 methods and/or Lehne 2015 code for details on genomic control for EWAS
+  # Below is modeled after Lehne 2015
+  lambda <- median(qchisq(p_vals, df=1, lower.tail=F), 
+                            na.rm=T) / qchisq(0.5, df=1)
+  round(lambda, 2)
+}
+```
+
+```{r gwas-integration-prep}
+if (!file.exists("../int/hassan_gwas_anno.rds")) {
+  library(data.table)
+  hassan_gwas <- fread("../data/literature/GWASVITK_M1_GC1.txt") %>%
+    as_tibble() %>%
+    select(MarkerName, Effect, `P-value`)
+  
+  snp_anno <- fread("../int/snp_annot_hg19_nodups.txt")
+  snp_anno_df <- as_tibble(snp_anno) %>%
+    setNames(c("chr", "pos", "SNP", "A1", "A2", "concat")) %>%
+    select(SNP, chr, pos)
+  
+  hassan_gwas_anno <- hassan_gwas %>%
+    inner_join(snp_anno_df, by=c("MarkerName"="SNP"))
+  saveRDS(hassan_gwas_anno, "../int/hassan_gwas_anno.rds")
+}
+
+hassan_gwas_anno <- readRDS("../int/hassan_gwas_anno.rds")
+hassan_gwas_anno <- mutate(hassan_gwas_anno, chr=as.integer(chr)) %>%
+  mutate(negLogP=-log10(`P-value`)) %>%
+  na.omit()
+
+gwas_ranges <- GRanges(seqnames=hassan_gwas_anno$chr, 
+                       ranges=IRanges(start=hassan_gwas_anno$pos, 
+                                      end=hassan_gwas_anno$pos))
+```
+
+# Baseline vitamin K EWAS
+
+```{r baseline-ewas-prep}
+run_baseline_K_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["log_baseline_K_lld", 
+                                  c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+nmd$log_baseline_K_lld <- log(ifelse(nmd$baseline_K == 0,
+                                     0.01, nmd$baseline_K))
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+baseline_formula <- paste0("meth ~ log_baseline_K_lld + ", cpPC_string)
+```
+
+```{r baseline-ewas, cache=1}
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+system.time(vitk_ewas_res_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+    run_baseline_K_model(meth, nmd, baseline_formula))
+
+stopCluster(cl)
+```
+
+```{r baseline-ewas-postprocessing}
+baseline_res_df <- do.call(rbind, vitk_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name),
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
+## Model
+
+* Exposure = log-transformed blood phylloquinone concentrations
+    - Concentrations below the level of detection set to 0.01 before log-transforming
+* Outcome = methylation beta-values (~ fraction of cells methylated)
+* Covariates: 10 control-probe principal components (see QC/preliminaries report)
+
+## Basic output
+
+```{r baseline-outputs}
+manhattan(filter(baseline_res_df, p<0.01), chr="chr", bp="pos", p="p")
+
+lambda_baseline <- gControl(baseline_res_df$p)
+make_qqplot(baseline_res_df$p, plotTitle=paste0("lambda: ", round(lambda_baseline, 2)))
+```
+
+## Interpretation
+
+```{r baseline-top-hits}
+fdr_cpgs <- filter(baseline_res_df, fdr<0.2)
+
+kable(head(fdr_cpgs, 5), caption="Top hits from baseline EWAS")
+```
+
+As one type of "anchor" for our results, we investigated overlapping signal between Hassan's GWAS of vitamin K and our *baseline* EWAS results. We tried 2 basic approaches:
+
+* Specific loci (+/- 100 bp) of interest (p < 1e-4) from EWAS --> GWAS SNPs
+* Specific loci (+/- 100 bp) of interest (p < 1e-4) from GWAS --> EWAS CpGs
+
+```{r baseline-gwas-comparison}
+ewas_ranges <- GRanges(seqnames=baseline_res_df$chr,
+                       ranges=IRanges(start=baseline_res_df$pos,
+                                      end=baseline_res_df$pos))
+
+par(mfrow=c(1,2))
+# Define interesting loci from EWAS
+fdr_cpgs <- filter(baseline_res_df, p < 0.0001)
+fdr_cpg_ranges <- GRanges(seqnames=fdr_cpgs$chr, 
+                          ranges=IRanges(start=fdr_cpgs$pos-100, 
+                                         end=fdr_cpgs$pos+100))
+# --> are those loci enriched for GWAS signal?
+cpg_to_snps_overlap <- findOverlaps(gwas_ranges, fdr_cpg_ranges)
+make_large_qqplot(hassan_gwas_anno[queryHits(cpg_to_snps_overlap), "P-value"][[1]],
+                  "EWAS CpGs p<1e-4 \n--> GWAS SNPs +/- 100bp")
+
+# Define interesting loci from GWAS
+hassan_gwas_anno$fdr <- p.adjust(hassan_gwas_anno$`P-value`, method="BH")
+fdr_snps <- filter(hassan_gwas_anno, `P-value` < 1e-4)
+fdr_snp_ranges <- GRanges(seqnames=fdr_snps$chr, 
+                          ranges=IRanges(start=fdr_snps$pos-100, 
+                                         end=fdr_snps$pos+100))
+# --> are those loci enriched for EWAS signal?
+snp_to_cpgs_overlap <- findOverlaps(ewas_ranges, fdr_snp_ranges)
+baseline_gc_df <- mutate(baseline_res_df, 
+                p=pchisq(qchisq(p, df=1, lower.tail=F) / lambda_baseline,
+                         df=1, lower.tail=F))
+make_large_qqplot(baseline_gc_df[queryHits(snp_to_cpgs_overlap), "p"],
+                  "GWAS SNPs p<1e-4 \n--> EWAS CpGs +/- 100bp")
+```
+
+### Specific CpGs of interest
+
+```{r baseline-top-cpgs}
+kable(head(baseline_res_df, 10), 
+      caption="Top 10 CpGs from baseline EWAS")
+```
+
+Of particular interest is `r baseline_res_df$CpG[7]`, which is in the CACNA2D1 gene. The protein encoded by this gene has been associated with PIVKA-II (used as a proxy for subclinical vitamin K deficiency) in a plasma proteomic study in Nepalese children (Lee 2016).
+
+```{r baseline-gwas-comparison-broad, include=F}
+par(mfrow=c(1,2))
+fdr_broad_cpg_ranges <- GRanges(seqnames=fdr_cpgs$chr, 
+                                ranges=IRanges(start=fdr_cpgs$pos-1000, 
+                                               end=fdr_cpgs$pos+1000))
+broad_cpg_to_snps_overlap <- findOverlaps(gwas_ranges, fdr_broad_cpg_ranges)
+make_large_qqplot(hassan_gwas_anno[queryHits(broad_cpg_to_snps_overlap), "P-value"][[1]],
+                  "EWAS CpGs p<1e-4 \n--> GWAS SNPs +/- 1kb")
+
+fdr_broad_snp_ranges <- GRanges(seqnames=fdr_snps$chr, 
+                                ranges=IRanges(start=fdr_snps$pos-1000, 
+                                               end=fdr_snps$pos+1000))
+broad_snp_to_cpgs_overlap <- findOverlaps(ewas_ranges, fdr_broad_snp_ranges)
+make_large_qqplot(baseline_gc_df[queryHits(broad_snp_to_cpgs_overlap), "p"],
+                  "GWAS SNPs p<1e-4 \n--> EWAS CpGs +/- 1kb")
+```
+```{r baseline-hypothesis-genes, include=F}
+lipid_related <- c("NPC1L1", "APOA4", "APOA5", "APOE", "SORT1", "LPL")
+k_metab_related <- c("CYP4F2", "CYP2C9", "GGCX", "VKORC")
+## use the above as regular expression inputs
+## look at QQ plots of CpGs near these genes
+short_list_genes <- c(lipid_related, k_metab_related)
+short_list_cpgs <- filter(epic_anno, grepl(paste0("^", short_list_genes,
+                                                  collapse="|"),
+                                           UCSC_RefGene_Name))$Name
+short_list_res <- filter(baseline_gc_df, CpG %in% short_list_cpgs)
+
+long_list_cpgs <- read_csv("../data/VK_genes_to_CpG.csv")$Name
+long_list_res <- filter(baseline_gc_df, CpG %in% long_list_cpgs)
+
+par(mfrow=c(1,2))
+make_large_qqplot(short_list_res$p, "Hypothesis CpGs (short list)")
+make_large_qqplot(long_list_res$p, "Hypothesis CpGs (full list)")
+```
+
+# Responder EWAS
+
+```{r responder-ewas-prep}
+run_responder_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["responderTRUE", c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+responder_formula <- paste("meth ~ responder +", cpPC_string)
+```
+
+```{r responder-ewas, cache=1}
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+responder_ewas_res_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+  run_responder_model(meth, nmd, responder_formula)
+
+stopCluster(cl)
+```
+
+```{r responder-ewas-processing}
+responder_res_df <- do.call(rbind, responder_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name), 
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
+## Model
+
+* Exposure = log-transformed blood phylloquinone concentrations
+    - Concentrations below the level of detection set to 0.01 before log-transforming
+* Outcome = methylation beta-values (~ fraction of cells methylated)
+* Covariates: 10 control-probe principal components (see QC/preliminaries report)
+
+## Basic output
+
+```{r responder-outputs}
+manhattan(filter(responder_res_df, p<0.01), chr="chr", bp="pos", p="p")
+
+lambda_responder <- gControl(responder_res_df$p)
+make_qqplot(responder_res_df$p, 
+            plotTitle=paste0("lambda: ", round(lambda_responder, 2)))
+```
+
+```{r responder-investigation, eval=F}
+bonferroni_cpgs <- filter(response_res_df, p < 0.05 / nrow(response_res_df))
+suggestive_cpgs <- filter(response_res_df, p < 1e-5)
+fdr_cpgs <- filter(response_res_df, fdr<0.2)
+
+gsa_tbl <- missMethyl::gometh(suggestive_cpgs$CpG, 
+                              collection="GO", array.type="EPIC") %>%
+  arrange(P.DE)
+```
+
+## Interpretation
+
+```{r responder-gwas-comparison, include=F}
+ewas_ranges <- GRanges(seqnames=responder_res_df$chr,
+                       ranges=IRanges(start=responder_res_df$pos,
+                                      end=responder_res_df$pos))
+
+par(mfrow=c(1,2))
+# Define interesting loci from EWAS
+fdr_cpgs <- filter(responder_res_df, p < 0.0001)
+fdr_cpg_ranges <- GRanges(seqnames=fdr_cpgs$chr, 
+                          ranges=IRanges(start=fdr_cpgs$pos-100, 
+                                         end=fdr_cpgs$pos+100))
+# --> are those loci enriched for GWAS signal?
+cpg_to_snps_overlap <- findOverlaps(gwas_ranges, fdr_cpg_ranges)
+make_large_qqplot(hassan_gwas_anno[queryHits(cpg_to_snps_overlap), "P-value"][[1]],
+                  "EWAS CpGs p<1e-4 \n--> GWAS SNPs +/- 100bp")
+
+# Define interesting loci from GWAS
+hassan_gwas_anno$fdr <- p.adjust(hassan_gwas_anno$`P-value`, method="BH")
+fdr_snps <- filter(hassan_gwas_anno, `P-value` < 1e-4)
+fdr_snp_ranges <- GRanges(seqnames=fdr_snps$chr, 
+                          ranges=IRanges(start=fdr_snps$pos-100, 
+                                         end=fdr_snps$pos+100))
+# --> are those loci enriched for EWAS signal?
+snp_to_cpgs_overlap <- findOverlaps(ewas_ranges, fdr_snp_ranges)
+responder_gc_df <- mutate(responder_res_df, 
+                p=pchisq(qchisq(p, df=1, lower.tail=F) / lambda_responder,
+                         df=1, lower.tail=F))
+make_large_qqplot(responder_gc_df[queryHits(snp_to_cpgs_overlap), "p"],
+                  "GWAS CpGs p<1e-4 \n--> EWAS SNPs +/- 100bp")
+```
+
+```{r responder-hypothesis-genes}
+lipid_related <- c("NPC1L1", "APOA4", "APOA5", "APOE", "SORT1", "LPL")
+k_metab_related <- c("CYP4F2", "CYP2C9", "GGCX", "VKORC")
+## use the above as regular expression inputs
+## look at QQ plots of CpGs near these genes
+short_list_genes <- c(lipid_related, k_metab_related)
+short_list_cpgs <- filter(epic_anno, grepl(paste0("^", short_list_genes,
+                                                  collapse="|"),
+                                           UCSC_RefGene_Name))$Name
+short_list_res <- filter(responder_gc_df, CpG %in% short_list_cpgs)
+
+long_list_cpgs <- read_csv("../data/VK_genes_to_CpG.csv")$Name
+long_list_res <- filter(responder_gc_df, CpG %in% long_list_cpgs)
+
+par(mfrow=c(1,2))
+make_qqplot(short_list_res$p, "Hypothesis CpGs (short list)")
+make_large_qqplot(long_list_res$p, "Hypothesis CpGs (full list)")
+```
+
+### Specific CpGs of interest
+
+```{r responder-top-cpgs}
+kable(head(responder_res_df, 20), 
+      caption="Top 20 CpGs from responder EWAS")
+```
+
+Of note:
+
+* Multiple genes associated with these top CpGs interact with or relate to receptors for vitamins A & D.
+* `r responder_res_df$CpG[20]` is in CCDC12, which is known to interact with VKORC1. 
+* 2 of the CpGs are near genes related to androgen metabolism.
+
+
+
+
+
+

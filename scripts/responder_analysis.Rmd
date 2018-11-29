@@ -1,0 +1,301 @@
+---
+title: "DNA Methylation as a predictive marker for the response to vitamin K supplementation: responder selection"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(readr)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+knitr::opts_chunk$set(echo = FALSE, message=F, warning=F)
+```
+
+```{r load-data}
+X1760_long <- read_csv("C:/Users/jfium_000/Dropbox/Jenny-20130612/Nutrition-Tufts/Thesis/Working/1760/Student Scholarship Application/Data/X1760_long.csv")
+
+conc_box <- read_csv("C:/Users/jfium_000/Dropbox/Jenny-20130612/Nutrition-Tufts/Thesis/Working/1760/Student Scholarship Application/Data/Concentrations_Box.csv") %>%
+  setNames(c("Well","hnrcid","conc","ambiguous","Box"))
+
+X1760_wide_K_ewas <- read_csv("C:/Users/jfium_000/Dropbox/Jenny-20130612/Nutrition-Tufts/Thesis/Working/1760/Aim 2.1/Data/X1760_wide_K_fromuploadfile.csv")
+
+```
+
+```{r clean-data}
+filtered <- X1760_long %>%
+  filter(KorP==1,
+         totKcomp>0.85,
+         consent=="y",
+         race==5)
+
+filtered_placebo <- X1760_long %>%
+  filter(KorP==0,
+         totKcomp>0.85,
+         consent=="y",
+         race==5)
+```
+
+```{r summaries over 4 follow up visits for both treated and placebo}
+followup_summaries <- filtered %>%
+filter(VISIT != 0) %>% 
+  group_by(hnrcid) %>%
+  dplyr::summarise(n=n(),
+            median=median(K1, na.rm=T),
+            sd=sd(K1, na.rm=T),
+            variance=var(K1, na.rm=T))
+
+followup_summaries_placebo <- filtered_placebo %>%
+filter(VISIT != 0) %>% 
+  group_by(hnrcid) %>%
+  dplyr::summarise(n=n(),
+            median=median(K1, na.rm=T),
+            sd=sd(K1, na.rm=T),
+            variance=var(K1, na.rm=T))
+```
+
+We used data from a double blinded, randomized, controlled trial of healthy older individuals to examine the large variability in the response to phylloquinone supplementation. Individuals were randomized to a treatment (multivitamin plus 500ug/d phylloquinone) or control (daily multivitamin without additional phylloquinone) group. Blood was drawn at 0, 6, 12, 24, and 36 months under fasting conditions and plasma phylloquinone (nmol/L) was measured at each time point. 
+
+Only white (422/452, 93%) individuals who provided consent for genotyping (409/452, 90%) and were greater than 85% adherent (346/452, 77%) to the protocol were examined. This included `r nrow(filtered[which(filtered$VISIT==0 & filtered$KorP==1),])` in the treated group and `r nrow(filtered_placebo[which(filtered_placebo$VISIT==0 & filtered_placebo$KorP==0),])` in the control group. 
+
+# Expected variance in plasma phylloquinone over follow-up study visits
+
+Plasma phylloquinone concentrations are sensitive to fasting/non-fasting conditions. To differentiate between a large increase in fasted plasma phylloquinone concentrations and a large response due to recent supplement intake, an expected level of variability in during the follow up study period was determined by examining the standard deviation of plasma phylloquinone over the 4 follow-up visits in the control group. 
+
+```{r placebo-variation}
+par(fig=c(0,1,0,1))
+hist(followup_summaries_placebo$sd[which(followup_summaries_placebo$sd<10)], breaks=20, xlab="Standard deviation (nmol/L) of plasma phylloquinone (nmol/L)", 
+     cex.lab=0.8, 
+     main="Intra-individual standard deviation of plasma phylloquinone (nmol/L) for follow-up visits \n6, 12, 24, and 36 months (control Group)", 
+     cex.main=.8)
+par(fig=c(0.55,.95,.3,.9), new=T)
+hist(followup_summaries_placebo$sd, breaks=20, xlab="", 
+     cex.lab=0.8, 
+     main="", 
+     cex.main=.8)
+
+
+```
+
+The normal range of variation appears to less than 2 nmol/L.
+
+The intra-individual variance of plasma phylloquinone concentrations over the four follow-up exams was subsequently examined among individiauls in the treated group. 
+
+```{r treated-variation}
+par(mfrow=c(1,2))
+hist(followup_summaries$sd, breaks=20, cex.lab=.8, xlab="Standard deviation (nmol/L)", main="                                                   \n 
+        ")
+hist(filter(followup_summaries, sd<3)$sd, breaks=20, cex.lab=.8, main="                                                   \n 
+        ", xlab="Standard deviation (nmol/L), SD<3nmol/L")
+
+mtext(side = 1, text = c("Intra-individual standard deviation of plasma phylloquinone (nmol/L) for follow-up visits \n6, 12, 24,  and 36 months (treated group)"),font = c(2), cex=.8, line = c(-21), outer=TRUE)
+```
+
+Similarly, among treated individuals, the normal range of variation appears to less than 2 nmol/L.
+
+Subsequent analyses were limited to those with a standard deviation in plasma phylloquinone during follow-up visits of < 2 nmol/L. 
+
+```{r, echo=FALSE, results='asis'}
+cat("\\newpage")
+
+```
+
+# Identifying Non-Responders
+
+The plasma phylloquinone 'response' [median of follow-up - baseline] was examined among individuals in the control group in order to determine an expected range of change under standard conditions that could be attributable to environmental variability . 
+
+```{r placebo-response, fig.height=3}
+responseDF_placebo <- X1760_long %>%
+  filter(VISIT==0) %>%
+  dplyr::select(hnrcid, K1) %>%
+  dplyr::rename(baselineK=K1) %>%
+  inner_join(followup_summaries_placebo, by="hnrcid") %>%
+  filter(sd<2) %>%
+  mutate(response=median-baselineK,
+         responsePerc=response/baselineK*100)
+
+nonResponderLimits <- quantile(responseDF_placebo$response, c(0.025,0.975))
+
+hist(filter(responseDF_placebo, sd<2)$response, breaks=10, cex.lab=0.6, xlab="Plasma phylloquinone 'response' (nmol/L)", main="Individual plasma phylloquinone 'response' [median of follow-up - baseline] (control group)", cex.main=.8, xlim=c(-5, 10))
+abline(v=nonResponderLimits[1],col="red")
+abline(v=nonResponderLimits[2],col="red")
+```
+
+The middle 95% of the plasma phylloquinone 'response'  [median of follow-up - baseline] fell between `r nonResponderLimits[1]` and `r nonResponderLimits[2]` (nmol/L) for individuals in the control group.
+
+This range was examined among individuals in the treated group to identify individuals that did not respond to the phylloquinone supplementation. 
+
+```{r treated-response, fig.height=3}
+responseDF <- X1760_long %>%
+  filter(VISIT==0) %>%
+  dplyr::select(hnrcid, K1) %>%
+  dplyr::rename(baselineK=K1) %>%
+  inner_join(followup_summaries, by="hnrcid") %>%
+  filter(sd<2) %>%
+  mutate(response=median-baselineK)
+
+hist(filter(responseDF, sd<2)$response, breaks=20, cex.lab=0.6, xlab="Plasma phylloquinone 'response' (nmol/L)", main="Individual plasma phylloquinone 'response' [median of follow-up - baseline] (treated group)", cex.main=.8, xlim=c(-5, 10))
+abline(v=nonResponderLimits[1],col="red")
+abline(v=nonResponderLimits[2],col="red")
+
+```
+
+
+```{r identify potential non-responders}
+potential_nonresponders <- responseDF %>%
+  filter(sd<2, 
+         findInterval(response, nonResponderLimits)==1)
+```
+
+Based on this range, `r nrow(potential_nonresponders)` individuals in the treated group can be classified as non-responders out of a total of `r nrow(filter(responseDF, sd<2))` individuals (white, over 85% adherent to the protocol, provided consent for genotyping, sd<2 nmol/L across follow-up visits).
+
+```{r echo=FALSE, results='asis'}
+cat("\\newpage")
+```
+
+```{r, plot potential non-responders and others}
+
+plotData_potential_nonresponders <- responseDF %>%
+  filter(sd<2) %>%
+  dplyr::select(hnrcid, baselineK, median) %>%
+  tidyr::gather(key=timept, value=Kvalue, baselineK, median) %>%
+  mutate(potential_responseYN=case_when(hnrcid %in% potential_nonresponders$hnrcid ~ "non-responder",
+                              TRUE ~ "undefined"))
+
+ggplot(plotData_potential_nonresponders, aes(x=timept, y=Kvalue, group=hnrcid, color=potential_responseYN)) +
+  geom_point() + geom_line() + 
+  ggtitle("Plasma phylloquinone 'response' of potential non-responders") + 
+  xlab("Baseline and follow-up [median of visits at months 6-36]") + 
+  ylab("Plasma phylloquinone concentration (nmol/L)") + 
+  theme(axis.ticks.x=element_blank(), axis.text.x = element_blank(), legend.position="top") +
+  guides(color=guide_legend("potential non-resonder/responder status"))
+
+```
+
+```{r echo=FALSE, results='asis'}
+cat("\\newpage")
+```
+
+# Responder and Non-Responder Selection
+
+```{r find individuals with greatest response}
+
+potentialResponders <- responseDF %>%
+  filter(sd<2) %>%
+  arrange(desc(response)) %>%
+  slice(1:75)
+
+```
+
+In order to select 24 responders and 24 non-responders for our analysis of DNA Methylation as a predictive marker for the response to vitamin K supplementation, additional criteria needed to be considered. From a practical standpoint, the maximum volume of DNA allowed by Illumina was 45uL with a preference for 500ng DNA. We excluded individuals whose DNA samples had a concentration < 22ng/uL. The 24 individuals from this population with the largest 'response' were identified as responders. To ensure that responders did not have lower baseline concentrations compared to non-responders, an additional filter was applied limiting non-responders to those with baseline concentrations below the maximum that of responders. Of these, the 24 individuals with the smallest 'response' were selected as non-responders. 
+
+```{r determine final responders and non-responders (24 each)}
+potentialFinalTbl <- bind_rows(Yes=potentialResponders, No=potential_nonresponders, .id="K_responder_YN") %>%
+  inner_join(conc_box, by="hnrcid") %>%  # Adds concentration information
+    dplyr::rename(baseline_K=baselineK,
+                median_K=median,
+                sd_K=sd,
+                response_K=response,
+                n_K=n)
+#sqldf('select * from conc_box where hnrcid in ("33770", "24462", "33653", "35114")')
+#22462 included in this list twice because there are more than one listing i conc_box
+#  Well hnrcid conc ambiguous Box
+#4  132  24462   16  87.50000   2
+#6  191  24462   13 107.69231   3
+# 11 others are included as potential responders and non-responders (9653, 19526, 23752, 27147, 31017, 33250, 33507, 33584, 33605, 33658, 33662)
+
+finalResponders <- potentialFinalTbl %>%
+  filter(conc>=22, K_responder_YN=="Yes") %>%  # Based on practical limits of Illumina Infinium methylation assay
+  arrange(desc(response_K)) %>%
+  slice(1:24)  # We want 24 responders
+finalNonResponders <- potentialFinalTbl %>%
+  filter(conc>=22, K_responder_YN=="No") %>%  # Based on practical limits of Illumina Infinium methylation assay
+  filter(K_responder_YN=="No",
+         baseline_K<max(finalResponders$baseline_K)) %>%  # We want non-responders to have similar baseline K status
+  slice(1:24)  # Ultimately matching responder sample size
+finalTbl <- bind_rows(finalResponders, finalNonResponders)
+finalTbl$DNA_vol <- (1.5/(finalTbl$conc/1000))
+
+write_csv(finalTbl, "C:\\Users\\jfium_000\\Dropbox\\Jenny-20130612\\Nutrition-Tufts\\Thesis\\Working\\1760\\Student Scholarship Application\\Reports\\finalTbl.csv")
+```
+
+
+```{r, add covariates to final table}
+
+X1760_long_V0 <- X1760_long %>%
+  filter(VISIT==0) %>%
+  dplyr::select(hnrcid, age_0, M1F0, statinsyn, pctbfv0, TRIG, KorP, race, bmi_0, smoker_0, n_vitk, CHOL, HDL, LDL, diabetes, hyptens, alcohol, totKcomp)
+
+X1760_long_V1 <- X1760_long %>%
+  filter(VISIT==1) %>%
+  dplyr::select(hnrcid, TRIG)  %>%
+  dplyr::rename(TRIG_1=TRIG)
+
+X1760_long_V2 <- X1760_long %>%
+  filter(VISIT==2) %>%
+  dplyr::select(hnrcid, TRIG)  %>%
+  dplyr::rename(TRIG_2=TRIG)
+
+X1760_long_V4 <- X1760_long %>%
+  filter(VISIT==4) %>%
+  dplyr::select(hnrcid, TRIG)  %>%
+  dplyr::rename(TRIG_4=TRIG)
+
+X1760_long_V6 <- X1760_long %>%
+  filter(VISIT==6) %>%
+  dplyr::select(hnrcid, TRIG, statinsyn)  %>%
+  dplyr::rename(TRIG_6=TRIG) %>%
+  dplyr::rename(statinsyn_6=statinsyn)
+
+finalTbl_withCovariates <- finalTbl %>%
+  inner_join(X1760_long_V0, by="hnrcid")
+finalTbl_withCovariates <- finalTbl_withCovariates %>%
+  inner_join(X1760_long_V1, by="hnrcid")
+finalTbl_withCovariates <- finalTbl_withCovariates %>%
+  inner_join(X1760_long_V2, by="hnrcid")
+finalTbl_withCovariates <- finalTbl_withCovariates %>%
+  inner_join(X1760_long_V4, by="hnrcid")
+finalTbl_withCovariates <- finalTbl_withCovariates %>%
+  inner_join(X1760_long_V6, by="hnrcid")
+
+finalTbl_withCovariates <- finalTbl_withCovariates %>%
+  dplyr::mutate(statins_mod=ifelse((statinsyn==0 & statinsyn_6==0), 0, ifelse((statinsyn==1 & statinsyn_6==1), 1, ifelse((statinsyn==0 & statinsyn_6==1), 2, NA))))
+
+
+X1760_wide_K_ewas_covar <- X1760_wide_K_ewas %>%
+  dplyr::select(hnrcid, n_tfat, n_sfa, n_pufa, n_mufa, n_chol)
+
+finalTbl_withCovariates <- finalTbl_withCovariates %>%
+  inner_join(X1760_wide_K_ewas_covar, by="hnrcid")
+
+write_csv(finalTbl_withCovariates, "C:\\Users\\jfium_000\\Dropbox\\Jenny-20130612\\Nutrition-Tufts\\Thesis\\Working\\1760\\Student Scholarship Application\\Reports\\finalTbl_withCovariates.csv")
+
+```
+
+```{r plot-responders}
+#`r nrow(responders)` individuals with the largest absolute 'response' were selected as responders.
+
+plotData_finalTbl <- responseDF %>%
+  dplyr::select(hnrcid, baselineK, median) %>%
+  tidyr::gather(key=timept, value=Kvalue, baselineK, median) %>%
+  mutate(responseYN=case_when(hnrcid %in% finalResponders$hnrcid ~ "responder",
+                              hnrcid %in% finalNonResponders$hnrcid ~ "non-responder",
+                              TRUE ~ "undefined"))
+
+plotData_finalTbl <- plotData_finalTbl %>%
+  filter(hnrcid %in% (finalTbl$hnrcid))
+
+ggplot(plotData_finalTbl, aes(x=timept, y=Kvalue, group=hnrcid, color=responseYN)) +
+   geom_point() + geom_line() + 
+   ggtitle("Plasma phylloquinone 'response' of responders and non-responders") + 
+   xlab("Baseline and follow-up [median of visits at months 6-36]") + 
+   ylab("Plasma phylloquinone concentration (nmol/L)") + 
+   theme(axis.ticks.x=element_blank(), axis.text.x = element_blank(), legend.position="top") +
+   guides(color=guide_legend("Resonder/Non-responder status"))
+
+#check to make sure baseline concentrations are no different
+baselinevalues.fit <- lm(Kvalue~responseYN, data=filter(plotData_finalTbl, timept=="baselineK"))
+
+```
+
+Using a linear regression model (Baseline Phylloquinone = alpha + beta*ResponderStatus), baseline concentrations are not significantly different between responders and non-responders (p-value = `r round(summary(baselinevalues.fit)$coef[2,4],3)`).

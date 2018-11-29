@@ -1,0 +1,429 @@
+---
+title: "vitk_response_ewas"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=F, message=F, warning=F, cache.path="../cache/")
+library(tidyverse)
+library(knitr)
+library(car)
+library(doParallel)
+library(foreach)
+library(itertools)
+library(IlluminaHumanMethylationEPICanno.ilm10b2.hg19)
+library(qqman)
+```
+
+```{r load-data}
+betas <- readRDS("../int/betas.qc.norm.filt.rds")
+
+metadata <- read_csv("../data/phen/finalTbl_withCovariates_more.csv")
+sampleSheet <- read_csv("../int/sampleSheet.csv")
+
+load("../int/pca.RData")
+cellCounts <- readRDS("../int/estCellCounts.rds")
+load("../int/CPACOR.RData")
+```
+
+```{r clean-data}
+mvals <- minfi::logit2(betas)
+
+cellCounts <- as.data.frame(cellCounts) %>%
+  rownames_to_column(var="sampleKey")
+
+nmd <- metadata %>%  # nmd = "non-methylation data"
+  mutate(responder=ifelse(K_responder_YN == "Yes", T, F)) %>%
+  inner_join(sampleSheet, by="hnrcid") %>%
+  mutate(sampleKey=paste(Sentrix_ID, Sentrix_Position, sep="_"),
+         row=as.integer(substr(Sentrix_Position, 3, 3))) %>%
+  inner_join(PCs, by="sampleKey") %>%
+  inner_join(cellCounts, by="sampleKey") %>%
+  inner_join(CP_PCs, by="sampleKey")
+nmd <- nmd[match(colnames(betas), nmd$sampleKey), ]
+stopifnot(all(nmd$sampleKey == colnames(betas)))
+
+epic_anno <- data.frame(getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b2.hg19),
+                        stringsAsFactors=F) %>%
+  filter(!(chr %in% c("chrX", "chrY"))) %>%
+  mutate(chr=as.integer(gsub("chr", "", chr)))
+```
+
+# Preliminary investigations
+
+```{r pca-investigation}
+ggplot(nmd, aes(x=PC1, y=PC2, color=sex)) +
+  geom_point()
+
+ggplot(nmd, aes(x=PC1, y=PC2, color=age)) +
+  geom_point()
+
+ggplot(nmd, aes(x=PC1, y=PC2, color=K_responder_YN)) +
+  geom_point()
+
+ggplot(nmd, aes(x=PC1, y=PC2, color=TRIG)) +
+  geom_point()
+
+ggplot(nmd, aes(x=PC1, y=PC2, color=Gran)) +
+  geom_point()
+```
+
+PC1 from the beta-value matrix (~16% of variance explained) seems to load heavily on granulocytes (mostly made up of neutrophils). Sex seems to be related to PC2 (~7% variance explained).
+
+```{r covariate-relationships}
+summary(glm(responder ~ sex, data=nmd, family="binomial"))
+summary(glm(responder ~ age, data=nmd, family="binomial"))
+summary(glm(responder ~ pctbfv0, data=nmd, family="binomial"))
+summary(glm(responder ~ TRIG, data=nmd, family="binomial"))
+summary(glm(responder ~ statinsyn, data=nmd, family="binomial"))
+
+summary(glm(responder ~ sex + age + pctbfv0 + statinsyn + TRIG, data=nmd, family="binomial"))
+vif(glm(responder ~ sex + age + pctbfv0 + statinsyn + TRIG, data=nmd, family="binomial"))
+# View(cor(model.matrix(~., data=select(nmd, responder, sex, age, pctbfv0, statinsyn, TRIG, TRIG_6, PC2, PC8,cpPC10))))
+```
+
+Note: VIF values are ~4 for sex and body fat % -- keep this in mind when evaluating later results.
+
+```{r ewas-prep}
+run_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["responderTRUE", c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+make_qqplot <- function(p_vec, plotTitle="Title") {
+  p_vec <- p_vec[!is.na(p_vec)]
+  qqplot(-log10(1:length(p_vec) / length(p_vec)), -log10(p_vec), pch=".", 
+         main=plotTitle, xlab="Expected (-logP)", ylab="Observed (-logP)")
+  abline(0, 1, col="red")
+}
+
+gControl <- function(p_vals) {
+  # See van Iterson 2017 methods and/or Lehne 2015 code for details on genomic control for EWAS
+  # Below is modeled after Lehne 2015
+  lambda <- median(qchisq(p_vals, df=1, lower.tail=F), 
+                   na.rm=T) / qchisq(0.5, df=1)
+  round(lambda, 2)
+}
+```
+
+```{r responder-ewas, cache=1, eval=F}
+set.seed(100)
+random4k <- sample(1:nrow(mvals), 4000)
+
+run_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["responderTRUE", c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+testfunc <- function(form, mask=rep(T, nrow(nmd))) {
+  vitk_response_ewas_res_list <- foreach(
+    meth=iter(mvals[random3k, ], by="row")) %do% {
+      # print(class(meth[, mask, drop=F]))
+      run_model(meth[, mask, drop=F], nmd[mask, ], form)
+    }
+      
+  
+  response_res_df <- do.call(rbind, vitk_response_ewas_res_list) %>%
+    data.frame(stringsAsFactors=F) %>%
+    mutate_at(c("beta", "t", "p"), as.numeric) %>%
+    inner_join(dplyr::select(epic_anno, Name, chr, pos), by=c("CpG"="Name")) %>%
+    mutate(fdr=p.adjust(p, method="BH"))
+  
+  gControl(response_res_df$p)
+}
+
+testfunc(paste0("meth ~ K_responder_YN + ", cpPC_string))
+
+basic_model <- "meth ~ responder"
+PC_string <- paste(paste0("PC", 1:10), collapse=" + ")
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+testfunc("meth ~ responder")
+# testfunc(paste0(basic_model, "+ ", cpPC_string))
+# testfunc(paste0(basic_model, " + cpPC1"))
+# testfunc(paste0(basic_model, " + ", paste(paste0("cpPC", 1:10), collapse=" + ")))
+# testfunc(paste0(basic_model, " + ", paste(paste0("PC", 1:10), collapse=" + ")))
+
+#lambdas <- lapply(1:20, function(x) testfunc(paste0(basic_model, " + PC", x)))
+
+form <- "meth ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10"
+
+form <- "meth ~ responder"
+
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+vitk_response_ewas_res_list <- foreach(
+  meth=iter(mvals[sample(1:500000, size=50000), ], by="row")) %do%
+  run_model(meth, nmd, form)
+
+stopCluster(cl)
+```
+
+```{r post-hoc-checks, eval=F}
+explore_df <- nmd %>% 
+  select(responder, cpPC1, cpPC10, paste0("PC", 1:10), TRIG, TRIG_6, age, M1F0, pctbfv0, statinsyn, row) 
+
+confounder_corrs <- data.frame(cor(explore_df, use="pairwise.complete.obs")) %>%
+  select(responder, cpPC1, contains("PC"))
+```
+
+Insights/notes regarding potential confounders contributing to the observed genomic inflation:
+
+* The first CPACOR (control probe principal component analysis) component explains most (~70%) of the control probe variability, and we observe that is is strongly correlated with the array row. This makes sense logically as it is our only anticipated technical factor contributing to systematic variability, and the row variable has exactly zero correlation with responder status.
+* The second PC appears to confound the results, and is highly correlated with age and sex (also % body fat, but this may just be tracking sex).
+* The eighth PC appears to confound the results, and is highly correlated with sex and % body fat (% body fat even stronger than sex).
+
+
+```{r responder-ewas-processing, eval=F}
+vitk_response_ewas_res <- data.frame(CpG=head(epic_anno$Name, 10), beta=rnorm(10), 
+                                     t=rnorm(10), p=runif(10, 0, 1), 
+                                     stringsAsFactors=F)
+
+response_res_df <- do.call(rbind, vitk_response_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name), 
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+
+trimmed_res <- filter(response_res_df, p<0.01)
+
+manhattan(trimmed_res, chr="chr", bp="pos", p="p")
+```
+
+```{r response-ewas-inflation, eval=F}
+lambda <- gControl(response_res_df$p)
+make_qqplot(response_res_df$p, plotTitle=paste0("lambda: ", round(lambda, 2)))
+```
+
+```{r response-investigation, eval=F}
+bonferroni_cpgs <- filter(response_res_df, p < 0.05 / nrow(response_res_df))
+suggestive_cpgs <- filter(response_res_df, p < 1e-5)
+fdr_cpgs <- filter(response_res_df, fdr<0.2)
+
+gsa_tbl <- missMethyl::gometh(suggestive_cpgs$CpG, 
+                              collection="GO", array.type="EPIC") %>%
+  arrange(P.DE)
+```
+
+
+```{r vitk-ewas, cache=1}
+run_baseline_K_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["log_baseline_K_lld", 
+                                  c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+set.seed(100)
+random4k <- sample(1:nrow(mvals), 4000)
+
+testfunc_K <- function(form, mask=rep(T, nrow(nmd))) {
+  vitk_response_ewas_res_list <- foreach(
+    meth=iter(mvals[random4k, ], by="row")) %do%
+    run_baseline_K_model(meth[, mask, drop=F], nmd[mask, ], form)
+  response_res_df <- do.call(rbind, vitk_response_ewas_res_list) %>%
+    data.frame(stringsAsFactors=F) %>%
+    mutate_at(c("beta", "t", "p"), as.numeric)
+  gControl(response_res_df$p)
+}
+
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+PC_string <- paste(paste0("PC", 1:10), collapse=" + ")
+cell_types_string <- "CD4T + CD8T + Bcell + NK + Mono + Gran"
+nmd$log_baseline_K_lld <- log(ifelse(nmd$baseline_K == 0,
+                                     0.01, nmd$baseline_K))
+form <- paste0("meth ~ log_baseline_K_lld + ", cpPC_string)
+# testfunc_K(form)
+
+# nmd$log_baseline_K <- log(nmd$baseline_K)
+# form <- paste0("meth ~ log_baseline_K")
+# baseline_detectable <- nmd$baseline_K > 0
+
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+system.time(vitk_ewas_res_list <- foreach(
+  meth=iter(mvals, by="row")) %do%
+    run_baseline_K_model(meth, nmd, form))
+
+stopCluster(cl)
+```
+
+```{r test, eval=F}
+form <- "meth ~ log_baseline_K_lld"
+vitk_ewas_res_list <- foreach(
+  meth=iter(mvals[sample(1:500000, size=50000), ], by="row")) %do%
+  run_baseline_K_model(meth, nmd, form)
+```
+
+```{r baseline-ewas-processing}
+baseline_res_df <- do.call(rbind, vitk_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name), 
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+
+manhattan(filter(baseline_res_df, p<0.01), chr="chr", bp="pos", p="p")
+
+lambda <- gControl(baseline_res_df$p)
+make_qqplot(baseline_res_df$p, plotTitle=paste0("lambda: ", round(lambda, 2)))
+
+fdr_cpgs <- filter(baseline_res_df, fdr<0.2)
+```
+
+```{r bootstrap-cpg-sets, eval=F}
+run_baseline_K_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["log_baseline_K_lld", 
+                                  c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+testfunc_K <- function(form, cpgs_idx, mask=rep(T, nrow(nmd))) {
+  vitk_response_ewas_res_list <- foreach(
+    meth=iter(mvals[cpgs_idx, ], by="row")) %do%
+    run_baseline_K_model(meth[, mask, drop=F], nmd[mask, ], form)
+  response_res_df <- do.call(rbind, vitk_response_ewas_res_list) %>%
+    data.frame(stringsAsFactors=F) %>%
+    mutate_at(c("beta", "t", "p"), as.numeric)
+  gControl(response_res_df$p)
+}
+
+lambdas_over_cpg_sets <- sapply(1:100, function(x) {
+  set.seed(x)
+  random4k <- sample(1:nrow(mvals), 4000)
+  testfunc_K("meth ~ log_baseline_K_lld", random4k)
+})
+
+lambdas_over_sample_sets <- sapply(1:100, function(x) {
+  set.seed(12345)
+  random4k <- sample(1:nrow(mvals), 4000)
+  set.seed(x)
+  testfunc_K("meth ~ log_baseline_K_lld", random4k,
+             mask=sample(1:48 %in% sample(1:48, size=38)))
+})
+```
+
+
+```{r gwas-integration-prep, eval=F}
+# library(data.table)
+# hassan_gwas <- fread("../data/literature/GWASVITK_M1_GC1.txt") %>%
+#   as_tibble() %>%
+#   select(MarkerName, Effect, `P-value`)
+# #snp_anno <- fread("../int/snp_annot_hg19_nodups.txt")
+# 
+# snp_anno_df <- as_tibble(snp_anno) %>%
+#   setNames(c("chr", "pos", "SNP", "A1", "A2", "concat")) %>%
+#   select(SNP, chr, pos)
+# 
+# hassan_gwas_anno <- hassan_gwas %>%
+#   inner_join(snp_anno_df, by=c("MarkerName"="SNP"))
+hassan_gwas_anno <- readRDS("../int/hassan_gwas_anno.rds")
+hassan_gwas_anno <- mutate(hassan_gwas_anno, chr=as.integer(chr)) %>%
+  mutate(negLogP=-log10(`P-value`)) %>%
+  na.omit()
+
+gwas_ranges <- GRanges(seqnames=hassan_gwas_anno$chr, 
+                       ranges=IRanges(start=hassan_gwas_anno$pos, 
+                                      end=hassan_gwas_anno$pos))
+ewas_ranges <- GRanges(seqnames=baseline_res_df$chr,
+                       ranges=IRanges(start=baseline_res_df$pos,
+                                      end=baseline_res_df$pos))
+```
+
+```{r gwas-comparison-specific, eval=F}
+make_qqplot_large <- function(p_vec, plotTitle="Title") {
+  p_vec <- p_vec[!is.na(p_vec)]
+  qqplot(-log10(1:length(p_vec) / length(p_vec)), -log10(p_vec), pch=".", 
+         cex=4,
+         main=plotTitle, xlab="Expected (-logP)", ylab="Observed (-logP)")
+  abline(0, 1, col="red")
+}
+
+fdr_cpgs <- filter(baseline_res_df, p < 0.0001)
+fdr_cpg_ranges <- GRanges(seqnames=fdr_cpgs$chr, 
+                          ranges=IRanges(start=fdr_cpgs$pos-100, 
+                                         end=fdr_cpgs$pos+100))
+cpg_to_snps_overlap <- findOverlaps(gwas_ranges, fdr_cpg_ranges)
+length(cpg_to_snps_overlap)
+make_qqplot_large(hassan_gwas_anno[queryHits(cpg_to_snps_overlap), "P-value"][[1]])
+
+hassan_gwas_anno$fdr <- p.adjust(hassan_gwas_anno$`P-value`, method="BH")
+fdr_snps <- filter(hassan_gwas_anno, `P-value` < 1e-4)
+fdr_snp_ranges <- GRanges(seqnames=fdr_snps$chr, 
+                          ranges=IRanges(start=fdr_snps$pos-100, 
+                                         end=fdr_snps$pos+100))
+snp_to_cpgs_overlap <- findOverlaps(ewas_ranges, fdr_snp_ranges)
+length(snp_to_cpgs_overlap)
+make_qqplot_large(baseline_res_df[queryHits(snp_to_cpgs_overlap), "p"])
+```
+
+```{r gwas-comparison-bulk, eval=F}
+interesting_cpgs <- filter(baseline_res_df, p<0.0001)
+interesting_cpg_ranges <- GRanges(seqnames=interesting_cpgs$chr, 
+                                  ranges=IRanges(start=interesting_cpgs$pos-1000, 
+                                                 end=interesting_cpgs$pos+1000))
+cpg_to_snps_overlap <- findOverlaps(gwas_ranges, interesting_cpg_ranges)
+make_qqplot(baseline_res_df[queryHits(cpg_to_snps_overlap), ]$p)
+
+
+interesting_snps <- filter(hassan_gwas_anno, `P-value`<0.0001)
+interesting_snp_ranges <- GRanges(seqnames=interesting_snps$chr, 
+                                  ranges=IRanges(start=interesting_snps$pos-1000, 
+                                                 end=interesting_snps$pos+1000))
+snp_to_cpgs_overlap <- findOverlaps(ewas_ranges, interesting_snp_ranges)
+make_qqplot(baseline_res_df[queryHits(snp_to_cpgs_overlap), ]$p)
+```
+
+As one type of "anchor" for our results, we investigated overlapping signal between Hassan's GWAS of vitamin K and our *baseline* EWAS results. We tried 4 basic approaches:
+
+* Specific loci (+/- 100 bp) of interest (FDR < 0.2) from EWAS --> GWAS SNPs
+    - 4 SNPs overlapping, one is potentially interesting (rs2291941; p=0.013)
+* Specific loci (+/- 100 bp) of interest (p < 1e-5) from GWAS --> EWAS CpGs
+    - No SNPs overlapping
+    - Loosen the threshold --> some overlap but no marker significance of CpGs
+* Broad loci (+/- 1 kb) of interest from EWAS --> GWAS SNPs
+    - QQ plot reveals modest enrichment of overlapping CpGs for greater significance
+* Broad loci (+/- 1 kb) of interest from GWAS --> EWAS CpGs
+    - QQ plot did not show any enrichment
+    
+```{r hypothesis-genes, eval=F}
+lipid_related <- c("NPC1L1", "APOA4", "APOA5", "APOE", "SORT1", "LPL")
+k_metab_related <- c("CYP4F2", "CYP2C9", "GGCX", "VKORC")
+## use the above as regular expression inputs
+## look at QQ plots of CpGs near these genes
+short_list_genes <- c(lipid_related, k_metab_related)
+short_list_cpgs <- filter(epic_anno, grepl(paste0("^", short_list_genes, 
+                                                  collapse="|"),
+                                           UCSC_RefGene_Name))$Name
+short_list_res <- filter(baseline_res_df, CpG %in% short_list_cpgs)
+make_qqplot(short_list_res$p)
+
+long_list_cpgs <- read_csv("../data/VK_genes_to_CpG.csv")$Name
+long_list_res <- filter(baseline_res_df, CpG %in% long_list_cpgs)
+make_qqplot(long_list_res$p)
+```
+    
+
