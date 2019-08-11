@@ -18,7 +18,7 @@ library(qqman)
 ```{r load-data}
 betas <- readRDS("../int/betas.qc.norm.filt.rds")
 
-metadata <- read_csv("../data/phen/finalTbl_withCovariates_more.csv")
+metadata <- read_csv("../data/phen/finalTbl_withPIVKAandOtherVKMeasures.csv")
 sampleSheet <- read_csv("../int/sampleSheet.csv")
 
 load("../int/pca.RData")
@@ -263,6 +263,41 @@ cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
 responder_formula <- paste("meth ~ responder +", cpPC_string)
 ```
 
+```{r responder-ewas-TEST, eval=F}
+run_responder_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  outlier_TF <- (regData$meth < quantile(regData$meth, 0.25) - 3 * IQR(regData$meth) | 
+                   (regData$meth > quantile(regData$meth, 0.75) + 3 * IQR(regData$meth)))
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData, subset=!outlier_TF)
+    sandwich_fit <- coeftest(lm_fit, vcov=vcovHC(lm_fit, type="HC"))
+    coefs <- sandwich_fit["responderTRUE", c("Estimate", "t value", "Pr(>|t|)")]
+    # coefs <- summary(lm_fit)$coef["responderTRUE", c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+responder_formula <- paste("meth ~ responder +", cpPC_string)
+responder_formula <- "meth ~ responder"
+# small_sample <- sample(1:nrow(mvals), size=500)
+
+responder_ewas_res_list <- foreach(
+  meth=iter(mvals[small_sample, ], by="row")) %dopar%
+  run_responder_model(meth, nmd, responder_formula)
+
+responder_res_df <- do.call(rbind, responder_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name), 
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+
+make_qqplot(responder_res_df$p, plotTitle=gControl(responder_res_df$p))
+```
+
 ```{r responder-ewas, cache=1}
 cl <- makePSOCKcluster(32)
 registerDoParallel(cl)
@@ -284,6 +319,28 @@ responder_res_df <- do.call(rbind, responder_ewas_res_list) %>%
   arrange(p)
 ```
 
+```{r responder-ewas-adjusted, cache=1}
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+responder_adj_formula <- paste0(responder_formula, " + age + sex")
+responder_adj_ewas_res_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+  run_responder_model(meth, nmd, responder_adj_formula)
+
+stopCluster(cl)
+```
+
+```{r responder-ewas-adjusted-processing}
+responder_adj_res_df <- do.call(rbind, responder_adj_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name), 
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
 ## Model
 
 * Exposure = log-transformed blood phylloquinone concentrations
@@ -294,7 +351,8 @@ responder_res_df <- do.call(rbind, responder_ewas_res_list) %>%
 ## Basic output
 
 ```{r responder-outputs}
-manhattan(filter(responder_res_df, p<0.01), chr="chr", bp="pos", p="p")
+# manhattan(filter(responder_res_df, p<0.1), chr="chr", bp="pos", p="p")
+manhattan(responder_res_df, chr="chr", bp="pos", p="p")
 
 lambda_responder <- gControl(responder_res_df$p)
 make_qqplot(responder_res_df$p, 
@@ -302,11 +360,12 @@ make_qqplot(responder_res_df$p,
 ```
 
 ```{r responder-investigation, eval=F}
-bonferroni_cpgs <- filter(response_res_df, p < 0.05 / nrow(response_res_df))
-suggestive_cpgs <- filter(response_res_df, p < 1e-5)
-fdr_cpgs <- filter(response_res_df, fdr<0.2)
+bonferroni_cpgs <- filter(responder_res_df, p < 0.05 /
+                            nrow(responder_res_df))
+suggestive_cpgs <- filter(responder_res_df, p < 1e-5)
+fdr_cpgs <- filter(responder_res_df, fdr<0.2)
 
-gsa_tbl <- missMethyl::gometh(suggestive_cpgs$CpG, 
+gsa_tbl <- missMethyl::gometh(fdr_cpgs$CpG, 
                               collection="GO", array.type="EPIC") %>%
   arrange(P.DE)
 ```
@@ -363,7 +422,7 @@ make_qqplot(short_list_res$p, "Hypothesis CpGs (short list)")
 make_large_qqplot(long_list_res$p, "Hypothesis CpGs (full list)")
 ```
 
-### Specific CpGs of interest
+<!-- ### Specific CpGs of interest -->
 
 ```{r responder-top-cpgs}
 kable(head(responder_res_df, 20), 
@@ -381,3 +440,338 @@ Of note:
 
 
 
+
+
+# Baseline PIVKA EWAS
+
+Rationale: secondary measure of vitamin K status to verify and expand on baseline vitamin K EWAS findings
+
+```{r pivka-ewas-prep}
+run_baseline_pivka_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["baseline_pivka", 
+                                  c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+nmd$baseline_pivka <- nmd$pivkav0
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+baseline_formula <- paste0("meth ~ baseline_pivka + ", cpPC_string)
+```
+
+```{r pivka-ewas, cache=1}
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+system.time(pivka_ewas_res_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+    run_baseline_pivka_model(meth, nmd, baseline_formula))
+
+stopCluster(cl)
+```
+
+```{r pivka-ewas-postprocessing}
+pivka_res_df <- do.call(rbind, pivka_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name),
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
+## Model
+
+* Exposure = PIVKA concentrations
+* Outcome = methylation beta-values (~ fraction of cells methylated)
+* Covariates: 10 control-probe principal components (see QC/preliminaries report)
+
+## Basic output
+
+```{r pivka-outputs}
+manhattan(filter(pivka_res_df, p<0.01), chr="chr", bp="pos", p="p")
+
+lambda_pivka <- gControl(pivka_res_df$p)
+make_qqplot(pivka_res_df$p, plotTitle=paste0("lambda: ", round(lambda_pivka, 2)))
+```
+
+## Interpretation
+
+```{r pivka-top-hits}
+fdr_cpgs <- filter(pivka_res_df, fdr<0.2)
+
+kable(head(fdr_cpgs, 5), caption="Top hits from PIVKA EWAS")
+```
+
+### Specific CpGs of interest
+
+```{r pivka-top-cpgs}
+kable(head(pivka_res_df, 20), 
+      caption="Top 20 CpGs from PIVKA EWAS")
+```
+
+# Baseline PIVKA EWAS (binary)
+
+Rationale: secondary measure of vitamin K status to verify and expand on baseline vitamin K EWAS findings
+
+```{r pivka-binary-ewas-prep}
+run_baseline_pivka_binary_model <- function(probeData, 
+                                            covarData, 
+                                            formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["baseline_pivka_binary", 
+                                  c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+nmd$baseline_pivka <- nmd$pivkav0
+nmd$baseline_pivka_binary <- as.numeric(nmd$baseline_pivka >= 2.4)
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+baseline_formula <- paste0("meth ~ baseline_pivka_binary + ", cpPC_string)
+```
+
+```{r pivka-binary-ewas, cache=1}
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+system.time(pivka_ewas_res_binary_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+    run_baseline_pivka_binary_model(meth, nmd, baseline_formula))
+
+stopCluster(cl)
+```
+
+```{r pivka-binary-ewas-postprocessing}
+pivka_res_binary_df <- do.call(rbind, pivka_ewas_res_binary_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name),
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
+## Model
+
+* Exposure = PIVKA concentrations (binary, </>=2.4 ())
+* Outcome = methylation beta-values (~ fraction of cells methylated)
+* Covariates: 10 control-probe principal components (see QC/preliminaries report)
+
+## Basic output
+
+```{r pivka-binary-outputs}
+manhattan(filter(pivka_res_binary_df, p<0.01), chr="chr", bp="pos", p="p")
+
+lambda_pivka_binary <- gControl(pivka_res_binary_df$p)
+make_qqplot(pivka_res_binary_df$p, plotTitle=paste0("lambda: ", round(lambda_pivka_binary, 2)))
+```
+
+## Interpretation
+
+```{r pivka-binary-top-cpgs}
+kable(head(pivka_res_binary_df, 20), 
+      caption="Top 10 CpGs from PIVKA EWAS")
+```
+
+# Baseline MD EWAS
+
+Rationale: secondary measure of vitamin K status to verify and expand on baseline vitamin K EWAS findings
+
+```{r md-ewas-prep}
+run_baseline_md_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["baseline_ln_md", 
+                                  c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+nmd$baseline_ln_md <- nmd$MD_ln
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+baseline_formula <- paste0("meth ~ baseline_ln_md + ", cpPC_string)
+```
+
+```{r md-ewas, cache=1}
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+system.time(md_ewas_res_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+    run_baseline_md_model(meth, nmd, baseline_formula))
+
+stopCluster(cl)
+```
+
+```{r md-ewas-postprocessing}
+md_res_df <- do.call(rbind, md_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name),
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
+## Model
+
+* Exposure = MD concentrations (log-transformed)
+* Outcome = methylation beta-values (~ fraction of cells methylated)
+* Covariates: 10 control-probe principal components (see QC/preliminaries report)
+
+## Basic output
+
+```{r md-outputs}
+manhattan(filter(md_res_df, p<0.01), chr="chr", bp="pos", p="p")
+
+lambda_md <- gControl(md_res_df$p)
+make_qqplot(md_res_df$p, plotTitle=paste0("lambda: ", round(lambda_md, 2)))
+```
+
+## Interpretation
+
+```{r md-top-cpgs}
+kable(head(md_res_df, 20), 
+      caption="Top 20 CpGs from MD EWAS")
+```
+
+# Baseline ucMGP EWAS
+
+Rationale: secondary measure of vitamin K status to verify and expand on baseline vitamin K EWAS findings
+
+```{r ucmgp-ewas-prep}
+run_baseline_ucmgp_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["baseline_ln_ucmgp", 
+                                  c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+nmd$baseline_ln_ucmgp <- nmd$dp_ucMGP_ln
+nmd$baseline_mgp <- nmd$MGP_ng_ml
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+baseline_formula <- paste0("meth ~ baseline_ln_ucmgp + MGP_ng_ml + ",
+                           cpPC_string)
+```
+
+```{r ucmgp-ewas, cache=1}
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+system.time(ucmgp_ewas_res_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+    run_baseline_ucmgp_model(meth, nmd, baseline_formula))
+
+stopCluster(cl)
+```
+
+```{r ucmgp-ewas-postprocessing}
+ucmgp_res_df <- do.call(rbind, ucmgp_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name),
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
+## Model
+
+* Exposure = ucMGP concentrations (log-transformed)
+* Outcome = methylation beta-values (~ fraction of cells methylated)
+* Covariates: 10 control-probe principal components (see QC/preliminaries report) plus non-log-transformed Matrix gla protein
+
+## Basic output
+
+```{r ucmgp-outputs}
+manhattan(filter(ucmgp_res_df, p<0.01), chr="chr", bp="pos", p="p")
+
+lambda_ucmgp <- gControl(ucmgp_res_df$p)
+make_qqplot(ucmgp_res_df$p, plotTitle=paste0("lambda: ", round(lambda_ucmgp, 2)))
+```
+
+## Interpretation
+
+```{r ucmgp-top-cpgs}
+kable(head(ucmgp_res_df, 20), 
+      caption="Top 20 CpGs from ucMGP EWAS")
+```
+
+# Baseline ucOC EWAS
+
+Rationale: secondary measure of vitamin K status to verify and expand on baseline vitamin K EWAS findings
+
+```{r ucoc-ewas-prep}
+run_baseline_ucoc_model <- function(probeData, covarData, formula_string) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef["baseline_ucoc", 
+                                  c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+nmd$baseline_ucoc <- nmd$p_ucOC
+cpPC_string <- paste(paste0("cpPC", 1:10), collapse=" + ")
+baseline_formula <- paste0("meth ~ baseline_ucoc + ",
+                           cpPC_string)
+```
+
+```{r ucoc-ewas, cache=1}
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+system.time(ucoc_ewas_res_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+    run_baseline_ucoc_model(meth, nmd, baseline_formula))
+
+stopCluster(cl)
+```
+
+```{r ucoc-ewas-postprocessing}
+ucoc_res_df <- do.call(rbind, ucoc_ewas_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name),
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
+## Model
+
+* Exposure = ucOC concentrations
+* Outcome = methylation beta-values (~ fraction of cells methylated)
+* Covariates: 10 control-probe principal components (see QC/preliminaries report)
+
+## Basic output
+
+```{r ucoc-outputs}
+manhattan(filter(ucoc_res_df, p<0.01), chr="chr", bp="pos", p="p")
+
+lambda_ucoc <- gControl(ucoc_res_df$p)
+make_qqplot(ucoc_res_df$p, plotTitle=paste0("lambda: ", round(lambda_ucoc, 2)))
+```
+
+## Interpretation
+
+```{r ucoc-top-cpgs}
+kable(head(ucoc_res_df, 20), 
+      caption="Top 20 CpGs from ucOC EWAS")
+```
