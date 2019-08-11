@@ -1,0 +1,8 @@
+data/*
+cache/*
+int/*
+opt/*
+
+*.html
+*.csv
+*.tiff
