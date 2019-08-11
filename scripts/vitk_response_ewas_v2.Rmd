@@ -130,12 +130,9 @@ run_responder_model <- function(probeData, covarData, formula_string) {
   outlier_TF <- (regData$meth < quantile(regData$meth, 0.25) - 3 * IQR(regData$meth) | 
                    (regData$meth > quantile(regData$meth, 0.75) + 3 * IQR(regData$meth)))
   regData <- regData[!outlier_TF, ]
-  # regData$meth <- lm(meth ~ cpPC2 + cpPC7 + cpPC9 + cpPC10, data=regData)$residual
-    
+
   tryCatch({
     lm_fit <- lm(as.formula(formula_string), data=regData)
-    # sandwich_fit <- coeftest(lm_fit, vcov=vcovHC(lm_fit, type="HC"))
-    # coefs <- sandwich_fit["baseline_K", c("Estimate", "t value", "Pr(>|t|)")]
     coefs <- summary(lm_fit)$coef["responderTRUE", c("Estimate", "t value", "Pr(>|t|)")]
     setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
   }, error=function(e) rep(NA, 3))
@@ -220,12 +217,9 @@ run_response_model <- function(probeData, covarData, formula_string) {
   outlier_TF <- (regData$meth < quantile(regData$meth, 0.25) - 3 * IQR(regData$meth) | 
                    (regData$meth > quantile(regData$meth, 0.75) + 3 * IQR(regData$meth)))
   regData <- regData[!outlier_TF, ]
-  # regData$meth <- lm(meth ~ cpPC2 + cpPC7 + cpPC9 + cpPC10, data=regData)$residual
-    
+
   tryCatch({
     lm_fit <- lm(as.formula(formula_string), data=regData)
-    # sandwich_fit <- coeftest(lm_fit, vcov=vcovHC(lm_fit, type="HC"))
-    # coefs <- sandwich_fit["baseline_K", c("Estimate", "t value", "Pr(>|t|)")]
     coefs <- summary(lm_fit)$coef["response_K", c("Estimate", "t value", "Pr(>|t|)")]
     setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
   }, error=function(e) rep(NA, 3))
@@ -254,30 +248,9 @@ responder_cont_res_df <- do.call(rbind, responder_ewas_cont_res_list) %>%
 ```
 
 ```{r responder-outputs}
-#manhattan(responder_res_df, chr="chr", bp="pos", p="p")
-
 lambda_responder <- gControl(responder_res_df$p)
 make_qqplot(responder_res_df$p, 
             plotTitle=paste0("lambda: ", round(lambda_responder, 2)))
-
-# top_cpgs <- responder_res_df$CpG[1:4]
-# bind_rows(list(model1=filter(responder_res_df, CpG %in% top_cpgs),
-#                model2=filter(responder_model2_res_df, CpG %in% top_cpgs),
-#                model3=filter(responder_model3_res_df, CpG %in% top_cpgs)),
-#           .id="model") %>% 
-#   mutate(Gene=gsub(";.*", "", UCSC_RefGene_Name),
-#          res_string=paste0(round(beta, 2), " (", 
-#                            format(p, scientific=T, digits=3), ")")) %>%
-#   select(model, CpG, Gene, res_string) %>%
-#   spread(key=model, value=res_string) %>%
-#   setNames(c("CpG", "Annotated Gene", "Model 1", "Model 2", "Model 3")) %>%
-#   kable(booktabs=T,
-#         caption="Top hits from vitamin K response EWAS") %>%
-#   footnote(general=c("Regression results presented as: beta (p-value)",
-#                      "Model 1: adjusted for 10 control-probe principal components",
-#                      "Model 2: additionally adjusted for age, sex, and estimated cell count fractions",
-#                      "Model 3: additionally adjusted for plasma triglycerides"),
-#            general_title="")
 ```
 
 ```{r responder-investigation, eval=F}
@@ -382,12 +355,9 @@ run_baseline_model <- function(probeData, covarData, formula_string) {
   outlier_TF <- (regData$meth < quantile(regData$meth, 0.25) - 3 * IQR(regData$meth) | 
                    (regData$meth > quantile(regData$meth, 0.75) + 3 * IQR(regData$meth)))
   regData <- regData[!outlier_TF, ]
-  # regData$meth <- lm(meth ~ cpPC2 + cpPC7 + cpPC9 + cpPC10, data=regData)$residual
-    
+
   tryCatch({
     lm_fit <- lm(as.formula(formula_string), data=regData)
-    # sandwich_fit <- coeftest(lm_fit, vcov=vcovHC(lm_fit, type="HC"))
-    # coefs <- sandwich_fit["lnBK", c("Estimate", "t value", "Pr(>|t|)")]
     coefs <- summary(lm_fit)$coef["lnBK", c("Estimate", "t value", "Pr(>|t|)")]
     setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
   }, error=function(e) rep(NA, 3))
@@ -512,30 +482,9 @@ baseline_model4_res_df <- do.call(rbind, baseline_ewas_model4_res_list) %>%
 ```
 
 ```{r baseline-outputs}
-#manhattan(baseline_res_df, chr="chr", bp="pos", p="p")
-
 lambda_baseline <- gControl(baseline_res_df$p)
 make_qqplot(baseline_res_df$p, 
             plotTitle=paste0("lambda: ", round(lambda_baseline, 2)))
-
-# top_cpgs <- baseline_res_df$CpG[1:4]
-# bind_rows(list(model1=filter(baseline_res_df, CpG %in% top_cpgs),
-#                model2=filter(baseline_model2_res_df, CpG %in% top_cpgs),
-#                model3=filter(baseline_model3_res_df, CpG %in% top_cpgs)),
-#           .id="model") %>% 
-#   mutate(Gene=gsub(";.*", "", UCSC_RefGene_Name),
-#          res_string=paste0(round(beta, 2), " (", 
-#                            format(p, scientific=T, digits=3), ")")) %>%
-#   select(model, CpG, Gene, res_string) %>%
-#   spread(key=model, value=res_string) %>%
-#   setNames(c("CpG", "Annotated Gene", "Model 1", "Model 2", "Model 3")) %>%
-#   kable(booktabs=T,
-#         caption="Top hits from vitamin K response EWAS") %>%
-#   footnote(general=c("Regression results presented as: beta (p-value)",
-#                      "Model 1: adjusted for 10 control-probe principal components",
-#                      "Model 2: additionally adjusted for age, sex, and estimated cell count fractions",
-#                      "Model 3: additionally adjusted for plasma triglycerides"),
-#            general_title="")
 ```
 
 ```{r baseline-investigation, eval=F}
@@ -630,13 +579,13 @@ baseline_res_df %>%
 ```
 
 
-# Manuscript tables/figures skeleton
+# Manuscript tables/figures
 
 ```{r population-description}
 data.frame(parameter=c("age", "bmi", "sex", "yada"),
            value=c(21, 21, "M", "yada")) %>%
   kable(longtable=T,
-        caption="Table 1: Phylloquinon Supplementation Trial Population Description")
+        caption="Table 1: Phylloquinone Supplementation Trial Population Description")
 ```
 
 ```{r responder-top-hits-table}
@@ -720,8 +669,6 @@ nominal_overlaps <- combp_res_responder %>%
           to(overlap_ranges))]) %>%
   filter(p_region_slk < 0.05,
          p_region_slk_baseline < 0.05) %>%
-  # filter(p_region_slk < 0.01,
-  #        p_region_slk_baseline < 0.01) %>%
   arrange(p_region_slk)
 nominal_overlap_cpgs <- apply(nominal_overlaps, 1, function(row) {
   region_to_cpgs(gsub("chr", "", row["chr"]), row["start"], row["end"])
@@ -772,38 +719,10 @@ combp_res_baseline %>%
          p_region_slk, p_adj_region_sidak) %>%
   setNames(c("Locus", "# CpGs", "Annotated gene", "P", "Adj. P")) %>%
   write_csv("../output/combp_baseline_res_tbl.csv")
-
-# combp_res_tbl_pretty <- combp_res_tbl %>%
-#   mutate_at(c("p_region_slk", "p_adj_region_sidak", "p_region_slk_fhs"), 
-#             function(p) format(as.numeric(p), digits=3, scientific=T)) %>%
-#   select(loc, num_cpgs, annot_gene, gene_loc, p_region_slk, p_adj_region_sidak, p_region_slk_fhs) %>%
-#   setNames(c("Location", "# CpGs", "Annotated gene", "Genomic region", "P", "Adj. P", "P"))
-# kable(combp_res_tbl_pretty, booktabs=T, 
-#       caption=paste("Comb-p regions with multiple test-corrected p < 0.05",
-#                     "in WHI and Bonferroni p < 0.05 in FHS")) %>%
-#   add_header_above(c("", "", "", "", "Discovery"=2, "Replication"))
-# 
-# combp_res_responder %>%
-#   filter(p_region_slk < 1e-5) %>%
-#   mutate(chr=gsub("chr", "", chr),
-#          pos=paste0(start, "-", end)) %>%
-#   select(chr, pos, num_cpgs, p_region_slk, p_adj_region_sidak) %>%
-#   setNames(c("Chromosome", "Position", "# CpGs", "SLK p-value", "Adjusted p-value"))
-# 
-# combp_res_responder %>%
-#   filter(p_region_slk < 1e-5) %>%
-#   mutate(chr=gsub("chr", "", chr),
-#          pos=paste0(start, "-", end)) %>%
-#   mutate_at(vars(contains("p_")), function(x) format(x, scientific=T, digits=3)) %>%
-#   select(chr, pos, num_cpgs, p_region_slk, p_adj_region_sidak) %>%
-#   setNames(c("Chromosome", "Position", "# CpGs", "SLK p-value", "Adjusted p-value"))
 ```
 
 ```{r responder-hypothesis-top-hits}
-# lipid_related_genes <- c("NPC1L1", "APOA4", "APOA5", "APOE", "SORT1", "LPL")
 lipid_related_genes <- c("NPC1L1", "APOA1", "APOA5", "APOE", "LPL", "APOB")
-# lipid_related_genes <- c("NPC1L1", "APOA4", "APOA5", "APOE", "SORT1", "LPL", "APOB", "APOA1", "APOA2", "APOC3")
-
 lipid_related_cpgs <- filter(epic_anno, grepl(paste0("^", lipid_related_genes,
                                                   collapse="|"),
                                            UCSC_RefGene_Name))$Name
@@ -855,7 +774,6 @@ coMET::comet.web(
   image.title="NPC1L1",
   start=npc1l1_res$pos[1],
   end=npc1l1_res$pos[nrow(npc1l1_res)],
-  # config.file="../int/npc1l1_config.txt"
   list.tracks=c("geneENSEMBL,CGI,DNAse,SNP"),
   verbose=F
 )
@@ -880,6 +798,140 @@ write_csv(baseline_res_tbl, "../output/baseline_res_tbl.csv")
 kable(baseline_res_tbl, booktabs=T, longtable=T,
       caption="Table 3: Genome-wide suggestive hits from baseline phylloquinone EWAS")
 ```
+
+```{r responder-baseline-overlap-with-combp, fig.cap="Figure 2: Responder/baseline overlap"}
+double_res <- inner_join(responder_res_df, baseline_res_df,
+                         by=c("CpG","chr","pos","UCSC_RefGene_Name"),
+                         suffix=c(".responder",".baseline"))
+double_res_fa <- inner_join(responder_model3_res_df, baseline_model4_res_df,
+                         by=c("CpG","chr","pos","UCSC_RefGene_Name"),
+                         suffix=c(".responder",".baseline"))
+manhattan_prep_df <- responder_model3_res_df %>%
+  group_by(chr) %>%
+  summarise(chr_len=max(pos)) %>%
+  mutate(tot=cumsum(chr_len) - chr_len) %>%
+  left_join(double_res_fa, by="chr") %>%
+  select(CpG, chr, pos, p.responder, p.baseline, tot) %>%
+  arrange(chr, pos) %>%
+  mutate(pos_cum=tot + pos)
+axisdf <- manhattan_prep_df %>%
+  group_by(chr) %>%
+  summarise(center=(max(pos_cum) + min(pos_cum)) / 2)
+manhattan_plt_df <- manhattan_prep_df %>%
+  mutate(responder=-log10(p.responder),
+         baseline=log10(p.baseline)) %>%
+  select(-p.responder, -p.baseline) %>%
+  gather(key=type, value=negLogP, responder, baseline)
+
+ggplot(filter(manhattan_plt_df, abs(negLogP) > 0), aes(x=pos_cum, y=negLogP)) +
+  geom_point(aes(color=as.factor(chr))) +
+  geom_hline(yintercept=c(-5, 5), color="blue") +
+  geom_hline(yintercept=c(-1, 1) * -log10(bonferroni_level), color="red") +
+  scale_color_manual(values=rep(c("gray", "turquoise3"), 22)) +
+  scale_x_continuous(label=ifelse(axisdf$chr %in% c(19, 21), "", axisdf$chr), 
+                     breaks=axisdf$center) +
+  scale_y_continuous(breaks=c(-4,0,4,8), labels=c(4,0,4,8)) +
+  labs(x="Chromosome", y=expression(
+    paste("-log10(P" [baseline],
+          paste(")                     -log10(P" [responder]),
+          paste(")")))) +
+  theme_bw() +
+  theme(
+    legend.position="none",
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+# https://www.r-graph-gallery.com/wp-content/uploads/2018/02/Manhattan_plot_in_R.html
+
+cor_obj_nominal <- cor.test(~beta.responder+beta.baseline, 
+                    data=filter(double_res, CpG %in% nominal_overlap_cpg_vec,
+                                p.responder < 0.05, p.baseline < 0.05))
+
+double_res_model3 <- inner_join(responder_model3_res_df, baseline_model3_res_df,
+                                     by=c("CpG","chr","pos","UCSC_RefGene_Name"),
+                                     suffix=c(".responder",".baseline"))
+cor_obj_model3_nominal <- cor.test(
+  ~beta.responder+beta.baseline,
+  data=filter(double_res_model3, CpG %in% nominal_overlap_cpg_vec,
+                                p.responder < 0.05, p.baseline < 0.05))
+
+cor_obj_full_models_nominal <- cor.test(
+  ~beta.responder+beta.baseline,
+  data=filter(double_res_fa, CpG %in% nominal_overlap_cpg_vec,
+              p.responder < 0.05, p.baseline < 0.05))
+
+cor_plt_df <- filter(double_res_fa, CpG %in% nominal_overlap_cpg_vec,
+                     p.responder < 0.05, p.baseline < 0.05)
+corr_p <- 2 * pt(cor_obj_full_models_nominal$statistic, 
+                 df=nrow(cor_plt_df) - 2, lower.tail=F)
+sign_sharing <- table(sign(cor_plt_df$beta.responder) == sign(cor_plt_df$beta.baseline))
+ggplot(cor_plt_df, aes(x=beta.responder, y=beta.baseline)) +
+  geom_point(alpha=0.5) +
+  annotate("text", x=0, y=0.23, label=expression(rho*"=0.38 (p=1.7e-15)")) +
+  annotate("text", x=0, y=0.2, label="Fraction sharing sign = 0.96") +
+  labs(
+    x=expression(Delta*"M-value between non-responders and responders"),
+    y=expression(Delta*"M-value per unit log(plasma phylloquinone)")
+  ) +
+  theme_bw()
+```
+
+```{r responder-baseline-enrichments}
+with(cor_plt_df, {
+  same_sign_enrich <- missMethyl::gometh(CpG[sign(beta.responder) == sign(beta.baseline)],
+                                         all.cpg=CpG, array.type="EPIC")
+  diff_sign_enrich <- missMethyl::gometh(CpG[sign(beta.responder) != sign(beta.baseline)],
+                                         all.cpg=CpG, array.type="EPIC")
+})
+```
+
+```{r beta-plots, fig.asp=1.1}
+plot_cpgs <- c(NCOR2="cg10918016",
+               XPC="cg04894169",
+               NPC1L1="cg02456675")
+
+int_pvals <- sapply(plot_cpgs, function(cpg) {
+  cpg_vec <- mvals[cpg, ]
+  form <- as.formula(paste0("cpg_vec ~ responder * sex + ", paste0("cpPC", 1:10, collapse=" + ")))
+  int_estimates <- lm(form, data=nmd) %>%
+    broom::tidy() %>%
+    filter(term == "responderTRUE:sexM")
+  int_estimates$p.value
+})
+
+beta_plots <- lapply(names(plot_cpgs), function(gene) {
+  cpg <- plot_cpgs[gene]
+  ggplot(nmd, aes(x=responder, y=ilogit2(mvals[cpg, ]), color=sex)) +
+    geom_jitter(width=0.2) +
+    scale_x_discrete(labels=c("FALSE"="N-R", "TRUE"="R")) +
+    scale_color_discrete(name="Sex") +
+    labs(x="",
+         y=paste0(plot_cpgs[gene], " (", gene, ")"))
+})
+
+library(cowplot)
+legend <- get_legend(beta_plots[[1]])
+
+plot_grid(beta_plots[[1]] + 
+            annotate("text", x=1, y=0.9675, label=paste0(
+              "Resp. x sex\np = ", round(int_pvals["NCOR2"], 2))) +
+            theme(legend.position=""), 
+          beta_plots[[2]] + 
+            annotate("text", x=2, y=0.4375, label=paste0(
+              "Resp. x sex\np = ", round(int_pvals["XPC"], 2))) +
+            theme(legend.position=""), 
+          beta_plots[[3]] + 
+            annotate("text", x=1, y=0.965, label=paste0(
+              "Resp. x sex\np = ", round(int_pvals["NPC1L1"], 2))) + 
+            theme(legend.position=""), 
+          legend,
+          nrow=2, labels=c("a", "b", "c"))
+```
+
+# Unused
 
 ```{r responder-baseline-overlap, fig.cap="Figure 2: Responder/baseline overlap", eval=F}
 double_res_full_models <- inner_join(responder_model3_res_df, baseline_model4_res_df,
@@ -961,149 +1013,4 @@ ggplot(filter(manhattan_plt_df, abs(negLogP) > 0), aes(x=pos_cum, y=negLogP)) +
 #     # y="Baseline effect size (arbitrary units)"
 #   ) +
 #   theme_bw()
-```
-
-```{r responder-baseline-overlap-combp, fig.cap="Figure 2: Responder/baseline overlap"}
-double_res <- inner_join(responder_res_df, baseline_res_df,
-                         by=c("CpG","chr","pos","UCSC_RefGene_Name"),
-                         suffix=c(".responder",".baseline"))
-double_res_fa <- inner_join(responder_model3_res_df, baseline_model4_res_df,
-                         by=c("CpG","chr","pos","UCSC_RefGene_Name"),
-                         suffix=c(".responder",".baseline"))
-manhattan_prep_df <- responder_model3_res_df %>%
-  group_by(chr) %>%
-  summarise(chr_len=max(pos)) %>%
-  mutate(tot=cumsum(chr_len) - chr_len) %>%
-  left_join(double_res_fa, by="chr") %>%
-  select(CpG, chr, pos, p.responder, p.baseline, tot) %>%
-  arrange(chr, pos) %>%
-  mutate(pos_cum=tot + pos)
-axisdf <- manhattan_prep_df %>%
-  group_by(chr) %>%
-  summarise(center=(max(pos_cum) + min(pos_cum)) / 2)
-manhattan_plt_df <- manhattan_prep_df %>%
-  mutate(responder=-log10(p.responder),
-         baseline=log10(p.baseline)) %>%
-  select(-p.responder, -p.baseline) %>%
-  gather(key=type, value=negLogP, responder, baseline)
-
-ggplot(filter(manhattan_plt_df, abs(negLogP) > 0), aes(x=pos_cum, y=negLogP)) +
-  geom_point(aes(color=as.factor(chr))) +
-  geom_hline(yintercept=c(-5, 5), color="blue") +
-  geom_hline(yintercept=c(-1, 1) * -log10(bonferroni_level), color="red") +
-  scale_color_manual(values=rep(c("gray", "turquoise3"), 22)) +
-  scale_x_continuous(label=ifelse(axisdf$chr %in% c(19, 21), "", axisdf$chr), 
-                     breaks=axisdf$center) +
-  scale_y_continuous(breaks=c(-4,0,4,8), labels=c(4,0,4,8)) +
-  labs(x="Chromosome", y=expression(
-    paste("-log10(P" [baseline],
-          paste(")                     -log10(P" [responder]),
-          paste(")")))) +
-  theme_bw() +
-  theme(
-    legend.position="none",
-    panel.border = element_blank(),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor.x = element_blank(),
-    axis.ticks.x = element_blank()
-  )
-
-# https://www.r-graph-gallery.com/wp-content/uploads/2018/02/Manhattan_plot_in_R.html
-
-cor_obj_nominal <- cor.test(~beta.responder+beta.baseline, 
-                    data=filter(double_res, CpG %in% nominal_overlap_cpg_vec,
-                                p.responder < 0.05, p.baseline < 0.05))
-
-double_res_model3 <- inner_join(responder_model3_res_df, baseline_model3_res_df,
-                                     by=c("CpG","chr","pos","UCSC_RefGene_Name"),
-                                     suffix=c(".responder",".baseline"))
-cor_obj_model3_nominal <- cor.test(
-  ~beta.responder+beta.baseline,
-  data=filter(double_res_model3, CpG %in% nominal_overlap_cpg_vec,
-                                p.responder < 0.05, p.baseline < 0.05))
-
-# double_res_full_models <- inner_join(responder_model3_res_df, baseline_model4_res_df,
-#                                      by=c("CpG","chr","pos","UCSC_RefGene_Name"),
-#                                      suffix=c(".responder",".baseline"))
-cor_obj_full_models_nominal <- cor.test(
-  ~beta.responder+beta.baseline,
-  data=filter(double_res_fa, CpG %in% nominal_overlap_cpg_vec,
-              p.responder < 0.05, p.baseline < 0.05))
-
-cor_plt_df <- filter(double_res_fa, CpG %in% nominal_overlap_cpg_vec,
-                     p.responder < 0.05, p.baseline < 0.05)
-corr_p <- 2 * pt(cor_obj_full_models_nominal$statistic, 
-                 df=nrow(cor_plt_df) - 2, lower.tail=F)
-sign_sharing <- table(sign(cor_plt_df$beta.responder) == sign(cor_plt_df$beta.baseline))
-ggplot(cor_plt_df, aes(x=beta.responder, y=beta.baseline)) +
-  geom_point(alpha=0.5) +
-  # annotate("text", label=paste0("Correlation of EWAS coefficients: ",
-  #                               round(cor_obj_full_models_nominal$estimate, 2),
-  #                               " (p=", signif(cor_obj_full_models_nominal$p.value, 2), ")"),
-  #          x=-0.3, y=-0.3) +
-  annotate("text", x=0, y=0.23, label=expression(rho*"=0.38 (p=1.7e-15)")) +
-  annotate("text", x=0, y=0.2, label="Fraction sharing sign = 0.96") +
-  labs(
-    # x="Responder effect size (arbitrary units)",
-    x=expression(Delta*"M-value between non-responders and responders"),
-    y=expression(Delta*"M-value per unit log(plasma phylloquinone)")
-    # y="Baseline effect size (arbitrary units)"
-  ) +
-  theme_bw()
-```
-
-```{r responder-baseline-enrichments}
-# double_res_adj <- inner_join(responder_model3_res_df, baseline_model4_res_df,
-#                          by=c("CpG","chr","pos","UCSC_RefGene_Name"),
-#                          suffix=c(".responder",".baseline"))
-
-with(cor_plt_df, {
-  same_sign_enrich <- missMethyl::gometh(CpG[sign(beta.responder) == sign(beta.baseline)],
-                                         all.cpg=CpG, array.type="EPIC")
-  diff_sign_enrich <- missMethyl::gometh(CpG[sign(beta.responder) != sign(beta.baseline)],
-                                         all.cpg=CpG, array.type="EPIC")
-})
-```
-
-```{r beta-plots, fig.asp=1.1}
-plot_cpgs <- c(NCOR2="cg10918016",
-               XPC="cg04894169",
-               NPC1L1="cg02456675")
-
-int_pvals <- sapply(plot_cpgs, function(cpg) {
-  cpg_vec <- mvals[cpg, ]
-  form <- as.formula(paste0("cpg_vec ~ responder * sex + ", paste0("cpPC", 1:10, collapse=" + ")))
-  int_estimates <- lm(form, data=nmd) %>%
-    broom::tidy() %>%
-    filter(term == "responderTRUE:sexM")
-  int_estimates$p.value
-})
-
-beta_plots <- lapply(names(plot_cpgs), function(gene) {
-  cpg <- plot_cpgs[gene]
-  ggplot(nmd, aes(x=responder, y=ilogit2(mvals[cpg, ]), color=sex)) +
-    geom_jitter(width=0.2) +
-    scale_x_discrete(labels=c("FALSE"="N-R", "TRUE"="R")) +
-    scale_color_discrete(name="Sex") +
-    labs(x="",
-         y=paste0(plot_cpgs[gene], " (", gene, ")"))
-})
-
-library(cowplot)
-legend <- get_legend(beta_plots[[1]])
-
-plot_grid(beta_plots[[1]] + 
-            annotate("text", x=1, y=0.9675, label=paste0(
-              "Resp. x sex\np = ", round(int_pvals["NCOR2"], 2))) +
-            theme(legend.position=""), 
-          beta_plots[[2]] + 
-            annotate("text", x=2, y=0.4375, label=paste0(
-              "Resp. x sex\np = ", round(int_pvals["XPC"], 2))) +
-            theme(legend.position=""), 
-          beta_plots[[3]] + 
-            annotate("text", x=1, y=0.965, label=paste0(
-              "Resp. x sex\np = ", round(int_pvals["NPC1L1"], 2))) + 
-            theme(legend.position=""), 
-          legend,
-          nrow=2, labels=c("a", "b", "c"))
 ```
