@@ -209,6 +209,29 @@ responder_model3_res_df <- do.call(rbind, responder_ewas_model3_res_list) %>%
   arrange(p)
 ```
 
+```{r responder-ewas-unadj, cache=1}
+responder_formula_unadj <- "meth ~ responder"
+
+cl <- makePSOCKcluster(32)
+registerDoParallel(cl)
+
+responder_ewas_unadj_res_list <- foreach(
+  meth=iter(mvals, by="row")) %dopar%
+  run_responder_model(meth, nmd, responder_formula_unadj)
+
+stopCluster(cl)
+```
+
+```{r responder-ewas-unadj-processing}
+responder_unadj_res_df <- do.call(rbind, responder_ewas_unadj_res_list) %>%
+  data.frame(stringsAsFactors=F) %>%
+  mutate_at(c("beta", "t", "p"), as.numeric) %>%
+  inner_join(dplyr::select(epic_anno, Name, chr, pos, UCSC_RefGene_Name), 
+             by=c("CpG"="Name")) %>%
+  mutate(fdr=p.adjust(p, method="BH")) %>% 
+  arrange(p)
+```
+
 ```{r responder-ewas-cont, cache=1}
 run_response_model <- function(probeData, covarData, formula_string) {
   CpG <- rownames(probeData)
@@ -931,6 +954,10 @@ plot_grid(beta_plots[[1]] +
             theme(legend.position=""), 
           legend,
           nrow=2, labels=c("a", "b", "c"))
+
+# For retrieving raw fractional methylation differences
+ncor2_tt <- t.test(ilogit2(mvals["cg10918016", ]) ~ nmd$responder)
+xpc_tt <- t.test(ilogit2(mvals["cg04894169", ]) ~ nmd$responder)
 ```
 
 # Unused
