@@ -579,13 +579,13 @@ baseline_res_df %>%
 ```
 
 
-# Manuscript tables/figures
+# Manuscript tables/figures 
 
 ```{r population-description}
 data.frame(parameter=c("age", "bmi", "sex", "yada"),
            value=c(21, 21, "M", "yada")) %>%
   kable(longtable=T,
-        caption="Table 1: Phylloquinone Supplementation Trial Population Description")
+        caption="Table 1: Phylloquinon Supplementation Trial Population Description")
 ```
 
 ```{r responder-top-hits-table}
@@ -607,8 +607,6 @@ responder_res_tbl <- lapply(
 
 lm1 <- lm(ilogit2(mvals[responder_res_tbl$CpG[1], ]) ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10, data=nmd)
 lm2 <- lm(ilogit2(mvals[responder_res_tbl$CpG[2], ]) ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10, data=nmd)
-# lm1 <- lm(ilogit2(mvals[responder_res_tbl$CpG[1], ]) ~ responder, data=nmd)
-# lm2 <- lm(ilogit2(mvals[responder_res_tbl$CpG[2], ]) ~ responder, data=nmd)
 
 responder_res_tbl$beta_diff <- c(lm1$coefficients["responderTRUE"],
                                  lm2$coefficients["responderTRUE"])
@@ -799,7 +797,7 @@ kable(baseline_res_tbl, booktabs=T, longtable=T,
       caption="Table 3: Genome-wide suggestive hits from baseline phylloquinone EWAS")
 ```
 
-```{r responder-baseline-overlap-with-combp, fig.cap="Figure 2: Responder/baseline overlap"}
+```{r responder-baseline-overlap-combp, fig.cap="Figure 2: Responder/baseline overlap"}
 double_res <- inner_join(responder_res_df, baseline_res_df,
                          by=c("CpG","chr","pos","UCSC_RefGene_Name"),
                          suffix=c(".responder",".baseline"))
@@ -827,7 +825,7 @@ ggplot(filter(manhattan_plt_df, abs(negLogP) > 0), aes(x=pos_cum, y=negLogP)) +
   geom_point(aes(color=as.factor(chr))) +
   geom_hline(yintercept=c(-5, 5), color="blue") +
   geom_hline(yintercept=c(-1, 1) * -log10(bonferroni_level), color="red") +
-  scale_color_manual(values=rep(c("gray", "turquoise3"), 22)) +
+  scale_color_manual(values=rep(c("grey40", "turquoise3"), 22)) +
   scale_x_continuous(label=ifelse(axisdf$chr %in% c(19, 21), "", axisdf$chr), 
                      breaks=axisdf$center) +
   scale_y_continuous(breaks=c(-4,0,4,8), labels=c(4,0,4,8)) +
@@ -870,8 +868,12 @@ corr_p <- 2 * pt(cor_obj_full_models_nominal$statistic,
 sign_sharing <- table(sign(cor_plt_df$beta.responder) == sign(cor_plt_df$beta.baseline))
 ggplot(cor_plt_df, aes(x=beta.responder, y=beta.baseline)) +
   geom_point(alpha=0.5) +
-  annotate("text", x=0, y=0.23, label=expression(rho*"=0.38 (p=1.7e-15)")) +
-  annotate("text", x=0, y=0.2, label="Fraction sharing sign = 0.96") +
+  annotate("text", x=0.1, y=0.23, label=expression(rho*"=0.38 (p=1.7e-15)")) +
+  annotate("text", x=0.1, y=0.2, label="Fraction sharing sign = 0.96") +
+  annotate("text", x=1.35, y=-0.15, label="cg15306863\n(DIPC)") +
+  annotate("text", x=1.16, y=0.23, label="cg03691822") +
+  annotate("text", x=1.22, y=0.29, label="cg00599530") +
+  annotate("text", x=-0.95, y=0.23, label="cg07674649\n(KCNE1)") +
   labs(
     x=expression(Delta*"M-value between non-responders and responders"),
     y=expression(Delta*"M-value per unit log(plasma phylloquinone)")
@@ -975,42 +977,4 @@ ggplot(filter(manhattan_plt_df, abs(negLogP) > 0), aes(x=pos_cum, y=negLogP)) +
   )
 
 # https://www.r-graph-gallery.com/wp-content/uploads/2018/02/Manhattan_plot_in_R.html
-
-# cor_obj <- cor.test(~beta.responder+beta.baseline, 
-#                     data=filter(double_res, p.responder < 0.05, p.baseline < 0.05))
-# 
-# double_res_model3 <- inner_join(responder_model3_res_df, baseline_model3_res_df,
-#                                      by=c("CpG","chr","pos","UCSC_RefGene_Name"),
-#                                      suffix=c(".responder",".baseline"))
-# cor_obj_model3_nominal <- cor.test(
-#   ~beta.responder+beta.baseline,
-#   data=filter(double_res_model3, p.responder < 0.05, p.baseline < 0.05))
-# 
-# double_res_full_models <- inner_join(responder_model3_res_df, baseline_model4_res_df,
-#                                      by=c("CpG","chr","pos","UCSC_RefGene_Name"),
-#                                      suffix=c(".responder",".baseline"))
-# cor_obj_full_models <- cor.test(
-#   ~beta.responder+beta.baseline,
-#   data=double_res_full_models)
-# cor_obj_full_models_nominal <- cor.test(
-#   ~beta.responder+beta.baseline,
-#   data=filter(double_res_full_models, p.responder < 0.05, p.baseline < 0.05))
-# 
-# cor_plt_df <- filter(double_res_full_models, p.responder < 0.05 & p.baseline < 0.05)
-# corr_p <- 2 * pt(cor_obj_full_models_nominal$statistic, 
-#                  df=nrow(cor_plt_df) - 2, lower.tail=F)
-# ggplot(cor_plt_df, aes(x=beta.responder, y=beta.baseline)) +
-#   geom_point(alpha=0.5) +
-#   # annotate("text", label=paste0("Correlation of EWAS coefficients: ",
-#   #                               round(cor_obj_full_models_nominal$estimate, 2),
-#   #                               " (p=", signif(cor_obj_full_models_nominal$p.value, 2), ")"),
-#   #          x=-0.3, y=-0.3) +
-#   annotate("text", x=-0.3, y=-0.3, label=expression(rho*"=0.86 (p~0)")) +
-#   labs(
-#     # x="Responder effect size (arbitrary units)",
-#     x=expression(Delta*"M-value between non-responders and responders"),
-#     y=expression(Delta*"M-value per unit log(plasma phylloquinone)")
-#     # y="Baseline effect size (arbitrary units)"
-#   ) +
-#   theme_bw()
 ```
