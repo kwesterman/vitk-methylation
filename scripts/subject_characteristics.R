@@ -54,9 +54,9 @@ X1760_long <- read_csv("C:/Users/jfium/Dropbox/Jenny-20130612/Nutrition-Tufts/Th
 X1760_long_1246 <- X1760_long[which(X1760_long$VISIT==1 | X1760_long$VISIT==2
                                   |X1760_long$VISIT==4 | X1760_long$VISIT==6),]
 
-c <- as.data.frame(aggregate(X1760_long_1246[,18], list(X1760_long_1246$hnrcid), median, na.rm=T))
-names(c)[1] <- "hnrcid"
-names(c)[2] <- "K1_median"
+long_data <- as.data.frame(aggregate(X1760_long_1246[,18], list(X1760_long_1246$hnrcid), median, na.rm=T))
+names(long_data)[1] <- "hnrcid"
+names(long_data)[2] <- "K1_median"
 
 mean(subj_data$K1[which(subj_data$responder_yn=="Yes")])
 sd(subj_data$K1[which(subj_data$responder_yn=="Yes")])
@@ -64,7 +64,7 @@ mean(subj_data$K1[which(subj_data$responder_yn=="No")])
 sd(subj_data$K1[which(subj_data$responder_yn=="No")])
 t.test(subj_data$K1 ~ subj_data$responder_yn)
 
-a <- merge(a, c, by="hnrcid")
+subj_data <- merge(subj_data, long_data, by="hnrcid")
 mean(subj_data$K1_median[which(subj_data$responder_yn=="Yes")])
 sd(subj_data$K1_median[which(subj_data$responder_yn=="Yes")])
 mean(subj_data$K1_median[which(subj_data$responder_yn=="No")])
