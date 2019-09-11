@@ -271,6 +271,7 @@ responder_cont_res_df <- do.call(rbind, responder_ewas_cont_res_list) %>%
 ```
 
 ```{r responder-outputs}
+lambda_responder_unadj <- gControl(responder_unadj_res_df$p)
 lambda_responder <- gControl(responder_res_df$p)
 make_qqplot(responder_res_df$p, 
             plotTitle=paste0("lambda: ", round(lambda_responder, 2)))
@@ -630,14 +631,19 @@ responder_res_tbl <- lapply(
 
 lm1 <- lm(ilogit2(mvals[responder_res_tbl$CpG[1], ]) ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10, data=nmd)
 lm2 <- lm(ilogit2(mvals[responder_res_tbl$CpG[2], ]) ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10, data=nmd)
-
-responder_res_tbl$beta_diff <- c(lm1$coefficients["responderTRUE"],
+responder_res_tbl$beta_diff <- c(lm1$coefficients["responderTRUE"],  # Corresponds to "adjusted" beta value differences
                                  lm2$coefficients["responderTRUE"])
+
+responder_res_tbl$beta_dff <- c(  # Corresponds to raw beta value differences
+  summary(lm(ilogit2(
+    mvals[responder_res_tbl$CpG[1], ]) ~ nmd$responder))$coef[2, 1],
+  summary(lm(ilogit2(
+    mvals[responder_res_tbl$CpG[2], ]) ~ nmd$responder))$coef[2, 1]
+)
 
 write_csv(responder_res_tbl, "../output/responder_res_tbl.csv")
 kable(responder_res_tbl, booktabs=T, longtable=T,
       caption="Table 2: Genome-wide significant hits from phylloquinone response EWAS")
-  
 ```
 
 ```{r combp-setup}
@@ -742,7 +748,7 @@ combp_res_baseline %>%
   write_csv("../output/combp_baseline_res_tbl.csv")
 ```
 
-```{r responder-hypothesis-top-hits}
+```{r responder-lipid-top-hits}
 lipid_related_genes <- c("NPC1L1", "APOA1", "APOA5", "APOE", "LPL", "APOB")
 lipid_related_cpgs <- filter(epic_anno, grepl(paste0("^", lipid_related_genes,
                                                   collapse="|"),
@@ -770,7 +776,7 @@ make_qqplot(filter(responder_res_df, CpG %in% lipid_related_cpgs)$p,
 ks.test(filter(responder_res_df, CpG %in% lipid_related_cpgs)$p, punif)
 ```
 
-```{r npc1l1-zoom, fig.cap="Figure 1: NPC1L1 plot", eval=F}
+```{r npc1l1-zoom, fig.cap="Figure 1: NPC1L1 plot"}
 npc1l1_res <- responder_res_df %>%
   filter(grepl("NPC1L1", UCSC_RefGene_Name)) %>%
   arrange(pos)
@@ -824,7 +830,7 @@ kable(baseline_res_tbl, booktabs=T, longtable=T,
 double_res <- inner_join(responder_res_df, baseline_res_df,
                          by=c("CpG","chr","pos","UCSC_RefGene_Name"),
                          suffix=c(".responder",".baseline"))
-double_res_fa <- inner_join(responder_model3_res_df, baseline_model4_res_df,
+double_res_fa <- inner_join(responder_model3_res_df, baseline_model4_res_df,  # fa = fully adjusted
                          by=c("CpG","chr","pos","UCSC_RefGene_Name"),
                          suffix=c(".responder",".baseline"))
 manhattan_prep_df <- responder_model3_res_df %>%
@@ -864,8 +870,7 @@ ggplot(filter(manhattan_plt_df, abs(negLogP) > 0), aes(x=pos_cum, y=negLogP)) +
     panel.grid.minor.x = element_blank(),
     axis.ticks.x = element_blank()
   )
-
-# https://www.r-graph-gallery.com/wp-content/uploads/2018/02/Manhattan_plot_in_R.html
+# Code based on https://www.r-graph-gallery.com/wp-content/uploads/2018/02/Manhattan_plot_in_R.html
 
 cor_obj_nominal <- cor.test(~beta.responder+beta.baseline, 
                     data=filter(double_res, CpG %in% nominal_overlap_cpg_vec,
