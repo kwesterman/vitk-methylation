@@ -627,14 +627,15 @@ responder_res_tbl <- lapply(
          Gene=unlist(lapply(strsplit(UCSC_RefGene_Name, split=";"), 
                             function(gvec) paste(unique(gvec), collapse="; ")))) %>%
   select(model, CpG, p, chr, pos, Gene) %>%
-  spread(key=model, value=p)
+  spread(key=model, value=p) %>%
+  arrange(model1)
 
-lm1 <- lm(ilogit2(mvals[responder_res_tbl$CpG[1], ]) ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10, data=nmd)
-lm2 <- lm(ilogit2(mvals[responder_res_tbl$CpG[2], ]) ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10, data=nmd)
-responder_res_tbl$beta_diff <- c(lm1$coefficients["responderTRUE"],  # Corresponds to "adjusted" beta value differences
-                                 lm2$coefficients["responderTRUE"])
+# lm1 <- lm(ilogit2(mvals[responder_res_tbl$CpG[1], ]) ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10, data=nmd)
+# lm2 <- lm(ilogit2(mvals[responder_res_tbl$CpG[2], ]) ~ responder + cpPC1 + cpPC2 + cpPC3 + cpPC4 + cpPC5 + cpPC6 + cpPC7 + cpPC8 + cpPC9 + cpPC10, data=nmd)
+# responder_res_tbl$beta_diff <- c(lm1$coefficients["responderTRUE"],  # Corresponds to "adjusted" beta value differences
+#                                  lm2$coefficients["responderTRUE"])
 
-responder_res_tbl$beta_dff <- c(  # Corresponds to raw beta value differences
+responder_res_tbl$beta_diff <- c(  # Corresponds to raw beta value differences
   summary(lm(ilogit2(
     mvals[responder_res_tbl$CpG[1], ]) ~ nmd$responder))$coef[2, 1],
   summary(lm(ilogit2(
@@ -722,7 +723,7 @@ find_genes_by_region <- function(locDF) {
 }
 
 combp_res_responder %>%
-  filter(p_region_slk < 1e-5) %>%
+  filter(p_adj_region_sidak < 0.01) %>%
   mutate(chr=gsub("chr", "", chr)) %>%
   mutate(annot_gene=find_genes_by_region(.),
          chr=paste0("chr", chr),
@@ -735,7 +736,7 @@ combp_res_responder %>%
   write_csv("../output/combp_responder_res_tbl.csv")
 
 combp_res_baseline %>%
-  filter(p_region_slk < 1e-5) %>%
+  filter(p_adj_region_sidak < 0.01) %>%
   mutate(chr=gsub("chr", "", chr)) %>%
   mutate(annot_gene=find_genes_by_region(.),
          chr=paste0("chr", chr),
@@ -765,7 +766,7 @@ lipid_related_tbl <- lapply(
                             function(gvec) paste(unique(gvec), collapse="; ")))) %>%
   select(model, CpG, p, chr, pos, Gene) %>%
   spread(key=model, value=p) %>%
-  arrange(model1) %>%
+  arrange(as.numeric(model1)) %>%
   mutate(fdr=p.adjust(model1, method="BH"))
 write_csv(lipid_related_tbl, "../output/lipid_related_tbl.csv")
 kable(lipid_related_tbl, booktabs=T, longtable=T,
@@ -820,7 +821,8 @@ baseline_res_tbl <- lapply(
          Gene=unlist(lapply(strsplit(UCSC_RefGene_Name, split=";"), 
                             function(gvec) paste(unique(gvec), collapse="; ")))) %>%
   select(model, CpG, p, chr, pos, Gene) %>%
-  spread(key=model, value=p)
+  spread(key=model, value=p) %>%
+  arrange(model1)
 write_csv(baseline_res_tbl, "../output/baseline_res_tbl.csv")
 kable(baseline_res_tbl, booktabs=T, longtable=T,
       caption="Table 3: Genome-wide suggestive hits from baseline phylloquinone EWAS")
@@ -912,9 +914,13 @@ ggplot(cor_plt_df, aes(x=beta.responder, y=beta.baseline)) +
 ```{r responder-baseline-enrichments}
 with(cor_plt_df, {
   same_sign_enrich <- missMethyl::gometh(CpG[sign(beta.responder) == sign(beta.baseline)],
-                                         all.cpg=CpG, array.type="EPIC")
+                                         all.cpg=CpG, array.type="EPIC") %>%
+    arrange(P.DE)
+  write_csv(same_sign_enrich, "../output/gsa_same_sign.csv")
   diff_sign_enrich <- missMethyl::gometh(CpG[sign(beta.responder) != sign(beta.baseline)],
-                                         all.cpg=CpG, array.type="EPIC")
+                                         all.cpg=CpG, array.type="EPIC") %>%
+    arrange(P.DE)
+  write_csv(diff_sign_enrich, "../output/gsa_diff_sign.csv")
 })
 ```
 

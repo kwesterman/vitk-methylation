@@ -64,6 +64,8 @@ include_graphics("../output/probeTypePlot_prenormalization.jpg")
 include_graphics("../output/probeTypePlot_postnormalization.jpg")
 ```
 
+After all preprocessing steps, `r nrow(mvals)` CpG sites were available for analysis.
+
 # PCA
 
 PCA was used to investigate sample grouping with respect to large-scale patterns in the methylation data.
