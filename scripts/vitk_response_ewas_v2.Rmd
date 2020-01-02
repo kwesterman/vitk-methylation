@@ -8,7 +8,7 @@ knitr::opts_chunk$set(echo=F, message=F, warning=F, cache.path="../cache/vitk_re
                       fig.path="../output/vitk_response_ewas_v2_figures/")
 library(tidyverse)
 library(knitr)
-library(car)
+# library(car)
 library(doParallel)
 library(foreach)
 library(itertools)
@@ -273,88 +273,28 @@ responder_cont_res_df <- do.call(rbind, responder_ewas_cont_res_list) %>%
 ```{r responder-outputs}
 lambda_responder_unadj <- gControl(responder_unadj_res_df$p)
 lambda_responder <- gControl(responder_res_df$p)
+lambda_responder_model2 <- gControl(responder_model2_res_df$p)
+lambda_responder_model3 <- gControl(responder_model3_res_df$p)
 make_qqplot(responder_res_df$p, 
             plotTitle=paste0("lambda: ", round(lambda_responder, 2)))
 ```
 
-```{r responder-investigation, eval=F}
-bonferroni_cpgs <- filter(responder_res_df, p < 0.05 /
-                            nrow(responder_res_df))
-suggestive_cpgs <- filter(responder_res_df, p < 1e-5)
-fdr_cpgs <- filter(responder_res_df, fdr<0.2)
+```{r pheno-followup}
+a <- select(nmd, contains("cpPC"), age, M1F0, CD4T, CD8T, NK, Bcell, Mono, lnTG)
+a <- as.matrix(a)
+cor_a <- cor(a)
+cor_a[abs(cor_a) < 0.4] <- 0
 
-gsa_tbl <- missMethyl::gometh(fdr_cpgs$CpG, 
-                              collection="GO", array.type="EPIC") %>%
-  arrange(P.DE)
-```
+cpacor_var_expl <- cumsum(pca.fit$values) / sum(pca.fit$values)
 
-```{r responder-gwas-comparison, eval=F}
-ewas_ranges <- GRanges(seqnames=responder_res_df$chr,
-                       ranges=IRanges(start=responder_res_df$pos,
-                                      end=responder_res_df$pos))
+# We examined correlations between these technical principal components and both biological variables (age/sex/cell composition) and technical variables (array and chip row), finding that CPACOR PCs 2&3 are strongly associated with sex (corr. > 0.5), while other PCs are associated with CD4T (PC8) or CD8T (PCs 4&7) (corrs. ~0.3-0.4). 
 
-par(mfrow=c(1,2))
-# Define interesting loci from EWAS
-fdr_cpgs <- filter(responder_res_df, p < 0.0001)
-fdr_cpg_ranges <- GRanges(seqnames=fdr_cpgs$chr, 
-                          ranges=IRanges(start=fdr_cpgs$pos-100, 
-                                         end=fdr_cpgs$pos+100))
-# --> are those loci enriched for GWAS signal?
-cpg_to_snps_overlap <- findOverlaps(gwas_ranges, fdr_cpg_ranges)
-# make_large_qqplot(hassan_gwas_anno[queryHits(cpg_to_snps_overlap), "P-value"][[1]],
-#                   "EWAS CpGs p<1e-4 \n--> GWAS SNPs +/- 100bp")
-
-# Define interesting loci from GWAS
-hassan_gwas_anno$fdr <- p.adjust(hassan_gwas_anno$`P-value`, method="BH")
-fdr_snps <- filter(hassan_gwas_anno, `P-value` < 1e-4)
-fdr_snp_ranges <- GRanges(seqnames=fdr_snps$chr, 
-                          ranges=IRanges(start=fdr_snps$pos-100, 
-                                         end=fdr_snps$pos+100))
-# --> are those loci enriched for EWAS signal?
-snp_to_cpgs_overlap <- findOverlaps(ewas_ranges, fdr_snp_ranges)
-responder_gc_df <- mutate(responder_res_df, 
-                p=pchisq(qchisq(p, df=1, lower.tail=F) / lambda_responder,
-                         df=1, lower.tail=F))
-make_large_qqplot(responder_gc_df[queryHits(snp_to_cpgs_overlap), "p"],
-                  "EWAS CpGs near (+/- 100kb) suggestive GWAS SNPs")
-
-responder_gc_df[queryHits(snp_to_cpgs_overlap), ] %>%
-  filter(p < 1e-2) %>%
-  mutate(p=format(p, scientific=T, digits=3),
-         Gene=gsub(";.*", "", UCSC_RefGene_Name)) %>%
-  select(CpG, Chr=chr, Pos=pos, Gene, P=p) %>%
-  kable(booktabs=T,
-        caption="Interesting CpGs near suggestive GWAS SNPs") %>%
-  kable_styling(full_width=F)
-```
-
-```{r responder-hypothesis-genes, eval=F}
-lipid_related <- c("NPC1L1", "APOA4", "APOA5", "APOE", "SORT1", "LPL")
-k_metab_related <- c("CYP4F2", "CYP2C9", "GGCX", "VKORC")
-## use the above as regular expression inputs
-## look at QQ plots of CpGs near these genes
-short_list_genes <- c(lipid_related, k_metab_related)
-short_list_cpgs <- filter(epic_anno, grepl(paste0("^", short_list_genes,
-                                                  collapse="|"),
-                                           UCSC_RefGene_Name))$Name
-short_list_res <- filter(responder_gc_df, CpG %in% short_list_cpgs)
-
-long_list_cpgs <- read_csv("../data/VK_genes_to_CpG.csv")$Name
-long_list_res <- filter(responder_gc_df, CpG %in% long_list_cpgs)
-
-par(mfrow=c(1,2))
-make_large_qqplot(short_list_res$p, "Hypothesis CpGs (short list)")
-make_large_qqplot(long_list_res$p, "Hypothesis CpGs (full list)")
-
-responder_gc_df %>%
-  filter(CpG %in% short_list_cpgs,
-         -log10(p) > 1.5) %>%
-  mutate(p=format(p, scientific=T, digits=3),
-         Gene=gsub(";.*", "", UCSC_RefGene_Name)) %>%
-  select(CpG, Chr=chr, Pos=pos, Gene, P=p) %>%
-  kable(booktabs=T,
-        caption="Interesting CpGs annotated to lipid- or vitamin K-related genes") %>%
-  kable_styling(full_width=F)
+for(pc in paste0("cpPC", 1:10)) {
+  print(broom::tidy(lm(as.formula(paste0(pc, "~Sentrix_Position")), data=nmd)))
+}
+for(pc in paste0("cpPC", 1:10)) {
+  print(broom::tidy(lm(as.formula(paste0(pc, "~as.character(Sentrix_ID)")), data=nmd)))
+}
 ```
 
 ```{r responder-top-cpgs}
@@ -663,9 +603,42 @@ baseline_res_df %>%
   arrange(chr, pos) %>%
   select(chrom=chr, chromStart=start, chromEnd=end, p=p, name=CpG) %>%
   write_tsv("../int/combp/baseline_model1_res.bed")
+
+responder_model2_res_df %>%
+  mutate(chr=paste0("chr", chr),
+         start=pos - 1,
+         end=pos) %>%
+  arrange(chr, pos) %>%
+  select(chrom=chr, chromStart=start, chromEnd=end, p=p, name=CpG) %>%
+  write_tsv("../int/combp/responder_model2_res.bed")
+
+baseline_model2_res_df %>%
+  mutate(chr=paste0("chr", chr),
+         start=pos - 1,
+         end=pos) %>%
+  arrange(chr, pos) %>%
+  select(chrom=chr, chromStart=start, chromEnd=end, p=p, name=CpG) %>%
+  write_tsv("../int/combp/baseline_model2_res.bed")
+```
+
+```{r combp-res-prep}
+region_to_cpgs <- function(dmrChr, start, end) {
+  filter(epic_anno, chr==dmrChr, 
+         pos>=as.numeric(start), pos<=as.numeric(end))$Name
+}
+
+find_genes_by_region <- function(locDF) {
+  apply(locDF, 1, function(row) {
+    regionAnnot <- filter(epic_anno, chr == row["chr"], 
+                          pos > as.numeric(row["start"]), 
+                          pos <= as.numeric(row["end"]))
+    regionAnnot$UCSC_RefGene_Name[1]
+  })
+}
 ```
 
 ```{r combp-res}
+# Read in combp results
 combp_res_responder <- read_tsv("../int/combp/regions.sig_responder_model1_Res.bed", col_names=F) %>%
   setNames(c("chr", "start", "end", "lowest_p", "num_cpgs", 
              "p_region_slk", "p_adj_region_sidak")) %>%
@@ -673,6 +646,14 @@ combp_res_responder <- read_tsv("../int/combp/regions.sig_responder_model1_Res.b
   filter(p_region_slk < 0.05, num_cpgs >= 2)
 combp_ranges_responder <- GRanges(combp_res_responder$chr, 
                                   IRanges(combp_res_responder$start, combp_res_responder$end))
+
+combp_res_responder_model2 <- read_tsv("../int/combp/regions.sig_responder_model2_Res.bed", col_names=F) %>%
+  setNames(c("chr", "start", "end", "lowest_p", "num_cpgs", 
+             "p_region_slk", "p_adj_region_sidak")) %>%
+  arrange(p_adj_region_sidak) %>%
+  filter(p_region_slk < 0.05, num_cpgs >= 2)
+combp_ranges_responder_model2 <- GRanges(combp_res_responder_model2$chr, 
+                                  IRanges(combp_res_responder_model2$start, combp_res_responder_model2$end))
 
 combp_res_baseline <- read_tsv("../int/combp/regions.sig_baseline_model1_res.bed", col_names=F) %>%
   setNames(c("chr", "start", "end", "lowest_p", "num_cpgs", 
@@ -682,11 +663,15 @@ combp_res_baseline <- read_tsv("../int/combp/regions.sig_baseline_model1_res.bed
 combp_ranges_baseline <- GRanges(combp_res_baseline$chr, 
                                   IRanges(combp_res_baseline$start, combp_res_baseline$end))
 
-region_to_cpgs <- function(dmrChr, start, end) {
-  filter(epic_anno, chr==dmrChr, 
-         pos>=as.numeric(start), pos<=as.numeric(end))$Name
-}
+combp_res_baseline_model2 <- read_tsv("../int/combp/regions.sig_baseline_model2_res.bed", col_names=F) %>%
+  setNames(c("chr", "start", "end", "lowest_p", "num_cpgs", 
+             "p_region_slk", "p_adj_region_sidak")) %>%
+  arrange(p_adj_region_sidak) %>%
+  filter(p_region_slk < 0.05, num_cpgs >= 2)
+combp_ranges_baseline_model2 <- GRanges(combp_res_baseline_model2$chr, 
+                                  IRanges(combp_res_baseline_model2$start, combp_res_baseline_model2$end))
 
+# Overlap between responder and baseline DMRs
 overlap_ranges <- findOverlaps(combp_ranges_responder, combp_ranges_baseline)
 
 nominal_overlaps <- combp_res_responder %>%
@@ -713,17 +698,27 @@ combp_rep <- combp_res_responder %>%
          p_region_slk_baseline < 0.05) %>%
   arrange(p_adj_region_sidak)
 
-find_genes_by_region <- function(locDF) {
-  apply(locDF, 1, function(row) {
-    regionAnnot <- filter(epic_anno, chr == row["chr"], 
-                          pos > as.numeric(row["start"]), 
-                          pos <= as.numeric(row["end"]))
-    regionAnnot$UCSC_RefGene_Name[1]
-  })
-}
+# combp_res_responder %>%
+#   filter(p_adj_region_sidak < 0.01) %>%
+#   mutate(chr=gsub("chr", "", chr)) %>%
+#   mutate(annot_gene=find_genes_by_region(.),
+#          chr=paste0("chr", chr),
+#          loc=paste0(chr, ":", start, "-", end)) %>%
+#   mutate_at(vars(contains("p_")), function(x) format(x, scientific=T, digits=3)) %>%
+#   mutate(annot_gene=unlist(lapply(strsplit(annot_gene, split=";"), function(x) paste(unique(x), collapse="; ")))) %>%
+#   select(loc, num_cpgs, annot_gene, 
+#          p_region_slk, p_adj_region_sidak) %>%
+#   setNames(c("Locus", "# CpGs", "Annotated gene", "P", "Adj. P")) %>%
+#   write_csv("../output/combp_responder_res_tbl.csv")
+
+responder_models_overlap_ranges <- findOverlaps(combp_ranges_responder, combp_ranges_responder_model2)
+responder_model2_overlaps <- combp_res_responder_model2 %>%
+  dplyr::slice(to(responder_models_overlap_ranges)) %>%
+  select(chr, start, end, p_adj_region_sidak_model2=p_adj_region_sidak)
 
 combp_res_responder %>%
-  filter(p_adj_region_sidak < 0.01) %>%
+  filter(p_adj_region_sidak < 0.05) %>%
+  left_join(responder_model2_overlaps, by=c("chr", "start", "end")) %>% 
   mutate(chr=gsub("chr", "", chr)) %>%
   mutate(annot_gene=find_genes_by_region(.),
          chr=paste0("chr", chr),
@@ -731,12 +726,31 @@ combp_res_responder %>%
   mutate_at(vars(contains("p_")), function(x) format(x, scientific=T, digits=3)) %>%
   mutate(annot_gene=unlist(lapply(strsplit(annot_gene, split=";"), function(x) paste(unique(x), collapse="; ")))) %>%
   select(loc, num_cpgs, annot_gene, 
-         p_region_slk, p_adj_region_sidak) %>%
-  setNames(c("Locus", "# CpGs", "Annotated gene", "P", "Adj. P")) %>%
-  write_csv("../output/combp_responder_res_tbl.csv")
+         p_region_slk, contains("p_adj_region")) %>%
+  setNames(c("Locus", "# CpGs", "Annotated gene", "P", "Adj. P", "Adj. P (model 2)")) %>%
+  write_csv("../output/combp_responder_with_model2_res_tbl.csv")
+
+# combp_res_baseline %>%
+#   filter(p_adj_region_sidak < 0.01) %>%
+#   mutate(chr=gsub("chr", "", chr)) %>%
+#   mutate(annot_gene=find_genes_by_region(.),
+#          chr=paste0("chr", chr),
+#          loc=paste0(chr, ":", start, "-", end)) %>%
+#   mutate_at(vars(contains("p_")), function(x) format(x, scientific=T, digits=3)) %>%
+#   mutate(annot_gene=unlist(lapply(strsplit(annot_gene, split=";"), function(x) paste(unique(x), collapse="; ")))) %>%
+#   select(loc, num_cpgs, annot_gene, 
+#          p_region_slk, p_adj_region_sidak) %>%
+#   setNames(c("Locus", "# CpGs", "Annotated gene", "P", "Adj. P")) %>%
+#   write_csv("../output/combp_baseline_res_tbl.csv")
+
+baseline_models_overlap_ranges <- findOverlaps(combp_ranges_baseline, combp_ranges_baseline_model2)
+baseline_model2_overlaps <- combp_res_baseline_model2 %>%
+  dplyr::slice(to(baseline_models_overlap_ranges)) %>%
+  select(chr, start, end, p_adj_region_sidak_model2=p_adj_region_sidak)
 
 combp_res_baseline %>%
-  filter(p_adj_region_sidak < 0.01) %>%
+  filter(p_adj_region_sidak < 0.05) %>%
+  left_join(baseline_model2_overlaps, by=c("chr", "start", "end")) %>% 
   mutate(chr=gsub("chr", "", chr)) %>%
   mutate(annot_gene=find_genes_by_region(.),
          chr=paste0("chr", chr),
@@ -744,9 +758,9 @@ combp_res_baseline %>%
   mutate_at(vars(contains("p_")), function(x) format(x, scientific=T, digits=3)) %>%
   mutate(annot_gene=unlist(lapply(strsplit(annot_gene, split=";"), function(x) paste(unique(x), collapse="; ")))) %>%
   select(loc, num_cpgs, annot_gene, 
-         p_region_slk, p_adj_region_sidak) %>%
-  setNames(c("Locus", "# CpGs", "Annotated gene", "P", "Adj. P")) %>%
-  write_csv("../output/combp_baseline_res_tbl.csv")
+         p_region_slk, contains("p_adj_region")) %>%
+  setNames(c("Locus", "# CpGs", "Annotated gene", "P", "Adj. P", "Adj. P (model 2)")) %>%
+  write_csv("../output/combp_baseline_with_model2_res_tbl.csv")
 ```
 
 ```{r responder-lipid-top-hits}
@@ -759,7 +773,7 @@ lipid_related_tbl <- lapply(
   list(model1=responder_res_df,
        model2=responder_model2_res_df,
        model3=responder_model3_res_df),
-  function(res_df) filter(res_df,CpG  %in% lipid_related_cpgs)) %>%
+  function(res_df) filter(res_df, CpG  %in% lipid_related_cpgs)) %>%
   bind_rows(.id="model") %>%
   mutate(p=format(p, digits=3, scientific=T),
          Gene=unlist(lapply(strsplit(UCSC_RefGene_Name, split=";"), 
@@ -775,9 +789,25 @@ kable(lipid_related_tbl, booktabs=T, longtable=T,
 make_qqplot(filter(responder_res_df, CpG %in% lipid_related_cpgs)$p,
                "", 5)
 ks.test(filter(responder_res_df, CpG %in% lipid_related_cpgs)$p, punif)
+
+snp_data <- read_csv("../data/NPC1L1_p_ucOC.csv") %>%
+  select(hnrcid, rs2072183_add)
+nmd_with_npc1l1_snp <- nmd %>%
+  left_join(snp_data, by="hnrcid") %>%
+  mutate(meth=mvals[lipid_related_tbl$CpG[1], ])
+npc1l1_snp_only_lm <- lm(as.formula(paste0("meth ~ rs2072183_add + ", paste0("cpPC", 1:10, collapse=" + "))),
+                         data=nmd_with_npc1l1_snp)
+npc1l1_snp_only_lm_model2 <- lm(as.formula(paste0("meth ~ rs2072183_add + sex + age + CD4T + CD8T + NK + Bcell + Mono + ", 
+                                                  paste0("cpPC", 1:10, collapse=" + "))),
+                                data=nmd_with_npc1l1_snp)
+npc1l1_with_snp_lm <- lm(as.formula(paste0(responder_formula, " + rs2072183_add")),
+                         data=nmd_with_npc1l1_snp) 
+npc1l1_with_snp_lm_model2 <- lm(as.formula(paste0(responder_formula_model2, " + rs2072183_add")),
+                                data=nmd_with_npc1l1_snp)
+
 ```
 
-```{r npc1l1-zoom, fig.cap="Figure 1: NPC1L1 plot"}
+```{r npc1l1-zoom, fig.cap="Figure 1: NPC1L1 plot", eval=F}
 npc1l1_res <- responder_res_df %>%
   filter(grepl("NPC1L1", UCSC_RefGene_Name)) %>%
   arrange(pos)
@@ -805,6 +835,43 @@ coMET::comet.web(
   list.tracks=c("geneENSEMBL,CGI,DNAse,SNP"),
   verbose=F
 )
+```
+
+```{r alternate-status-measures}
+top_responder_cpgs <- responder_res_df$CpG[1:10]
+
+run_Kstatus_model <- function(probeData, covarData, formula_string, status_measure) {
+  CpG <- rownames(probeData)
+  regData <- cbind(meth=as.vector(probeData), covarData)
+
+  outlier_TF <- (regData$meth < quantile(regData$meth, 0.25) - 3 * IQR(regData$meth) | 
+                   (regData$meth > quantile(regData$meth, 0.75) + 3 * IQR(regData$meth)))
+  regData <- regData[!outlier_TF, ]
+  formula_string <- gsub("responder", status_measure, formula_string)
+
+  tryCatch({
+    lm_fit <- lm(as.formula(formula_string), data=regData)
+    coefs <- summary(lm_fit)$coef[status_measure, c("Estimate", "t value", "Pr(>|t|)")]
+    setNames(c(CpG, coefs), c("CpG", "beta", "t", "p"))
+  }, error=function(e) rep(NA, 3))
+}
+
+nmd_with_status <- read_csv("../data/NPC1L1_p_ucOC.csv") %>%
+  mutate(median_p_ucOC=rowMedians(as.matrix(.[, 5:8]), na.rm=T),
+         delta_p_ucOC=median_p_ucOC - p_ucOC_0) %>%
+  inner_join(nmd, by="hnrcid")
+
+p_ucOC_ewas_res_list <- foreach(
+  meth=iter(mvals[top_responder_cpgs, ], by="row")) %do%
+  run_Kstatus_model(meth, nmd_with_status, responder_formula, "delta_p_ucOC")
+p_ucOC_res_df <- do.call(bind_rows, p_ucOC_ewas_res_list)
+
+lipid_p_ucOC_ewas_res_list <- foreach(
+  meth=iter(mvals[rownames(mvals) %in% lipid_related_cpgs, ], by="row")) %do%
+  run_Kstatus_model(meth, nmd_with_status, responder_formula, "delta_p_ucOC")
+lipid_p_ucOC_res_df <- do.call(bind_rows, lipid_p_ucOC_ewas_res_list)
+
+p_ucOC_responder_tt <- t.test(delta_p_ucOC ~ responder, data=nmd_with_status)
 ```
 
 ```{r baseline-top-hits-table}
@@ -921,7 +988,23 @@ with(cor_plt_df, {
                                          all.cpg=CpG, array.type="EPIC") %>%
     arrange(P.DE)
   write_csv(diff_sign_enrich, "../output/gsa_diff_sign.csv")
-})
+})       
+
+same_sign_cpgs <- cor_plt_df$CpG[sign(cor_plt_df$beta.responder) == sign(cor_plt_df$beta.baseline)]
+same_sign_genes <- epic_anno %>%
+  filter(Name %in% same_sign_cpgs) %>%
+  select(CpG=Name, Gene=UCSC_RefGene_Name) %>%
+  separate_rows(Gene, sep=";") %>%
+  distinct(Gene)
+write_csv(same_sign_genes, "../output/same_sign_genes.csv")
+
+diff_sign_cpgs <- cor_plt_df$CpG[sign(cor_plt_df$beta.responder) != sign(cor_plt_df$beta.baseline)]
+diff_sign_genes <- epic_anno %>%
+  filter(Name %in% diff_sign_cpgs) %>%
+  select(CpG=Name, Gene=UCSC_RefGene_Name) %>%
+  separate_rows(Gene, sep=";") %>%
+  distinct(Gene)
+write_csv(diff_sign_genes, "../output/diff_sign_genes.csv")
 ```
 
 ```{r beta-plots, fig.asp=1.1}
@@ -969,6 +1052,15 @@ plot_grid(beta_plots[[1]] +
 # For retrieving raw fractional methylation differences
 ncor2_tt <- t.test(ilogit2(mvals["cg10918016", ]) ~ nmd$responder)
 xpc_tt <- t.test(ilogit2(mvals["cg04894169", ]) ~ nmd$responder)
+```
+
+```{r data-for-deposit}
+nmd %>%
+  mutate(age=round(age)) %>%
+  select(sampleKey, responder, baseline_K, sex, age) %>%
+  write_csv("../output/metadata.csv")
+
+write.table(betas, "../output/beta_matrix.txt")
 ```
 
 # Unused
