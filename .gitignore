@@ -2,7 +2,7 @@ data/*
 cache/*
 int/*
 opt/*
+output/archive/*
 
-*.html
 *.csv
 *.tiff
